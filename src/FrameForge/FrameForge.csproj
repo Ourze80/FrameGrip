@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>FrameGrip</RootNamespace>
+    <AssemblyName>FrameGrip</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <!-- Parte nativa (src/native/build.ps1): copiata accanto all'app se è già stata compilata. -->
+  <ItemGroup Condition="Exists('..\native\bin\x64\FrameGripHook64.dll')">
+    <None Include="..\native\bin\x64\FrameGripHook64.dll" Link="FrameGripHook64.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\native\bin\x64\ffinject64.exe" Link="ffinject64.exe" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\bin\x86\FrameGripHook32.dll')">
+    <None Include="..\native\bin\x86\FrameGripHook32.dll" Link="FrameGripHook32.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\native\bin\x86\ffinject32.exe" Link="ffinject32.exe" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.*" />
+  </ItemGroup>
+
+</Project>

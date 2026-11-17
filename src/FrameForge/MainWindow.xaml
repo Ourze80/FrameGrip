@@ -1,0 +1,909 @@
+﻿<Window x:Class="FrameGrip.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FrameGrip"
+        Title="FrameGrip" Icon="Assets/app.ico" Width="1440" Height="920" MinWidth="1180" MinHeight="700"
+        Background="{DynamicResource Bg}" Foreground="{DynamicResource Fg}"
+        WindowStartupLocation="CenterScreen" FontFamily="Segoe UI Variable Text, Segoe UI" UseLayoutRounding="True"
+        PreviewKeyDown="Window_PreviewKeyDown">
+    <Window.Resources>
+        <local:LocKeyConverter x:Key="LocKey"/>
+        <!-- Maniglia per trascinare una riga della lista "Customize": quasi invisibile, si accende passando sulla riga. -->
+        <Style x:Key="DragGrip" TargetType="TextBlock">
+            <Setter Property="Text" Value="⋮⋮"/>
+            <Setter Property="Width" Value="16"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="TextAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Foreground" Value="{DynamicResource FgDim}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Cursor" Value="SizeAll"/>
+            <Setter Property="Opacity" Value="0.25"/>
+            <Setter Property="ToolTip" Value="{local:T Entry.Drag}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ContentPresenter}}" Value="True">
+                    <Setter Property="Opacity" Value="1"/>
+                </DataTrigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource AccentText}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <!-- Pulsanti di una riga della lista "Nell'overlay": tenui, si accendono passando sulla riga o con la tastiera. -->
+        <Style x:Key="RowMini" TargetType="Button" BasedOn="{StaticResource MiniButton}">
+            <Setter Property="Opacity" Value="0.3"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ContentPresenter}}" Value="True">
+                    <Setter Property="Opacity" Value="1"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsKeyboardFocusWithin, RelativeSource={RelativeSource AncestorType=ContentPresenter}}" Value="True">
+                    <Setter Property="Opacity" Value="1"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="212"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- BARRA A SINISTRA: le tre pagine in alto, guida e opzioni in basso. -->
+        <Border Grid.Column="0" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0">
+            <DockPanel>
+                <DockPanel DockPanel.Dock="Top" Margin="22,20,12,0">
+                    <Viewbox Width="30" Height="30" Margin="0,0,10,0" VerticalAlignment="Top">
+                        <Canvas Width="256" Height="256">
+                            <Rectangle Width="240" Height="240" Canvas.Left="8" Canvas.Top="8" RadiusX="56" RadiusY="56"
+                                       Fill="{DynamicResource Control}" Stroke="{DynamicResource LineStrong}" StrokeThickness="4"/>
+                            <Polyline Points="92,60 58,60 58,196 92,196" Stroke="{DynamicResource Accent}" StrokeThickness="24"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                            <Polyline Points="164,60 198,60 198,196 164,196" Stroke="{DynamicResource Accent}" StrokeThickness="24"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                            <Rectangle Width="16" Height="72" Canvas.Left="96" Canvas.Top="92" RadiusX="8" RadiusY="8" Fill="{DynamicResource Fg}"/>
+                            <Rectangle Width="16" Height="72" Canvas.Left="120" Canvas.Top="92" RadiusX="8" RadiusY="8" Fill="{DynamicResource Fg}"/>
+                            <Rectangle Width="16" Height="72" Canvas.Left="144" Canvas.Top="92" RadiusX="8" RadiusY="8" Fill="{DynamicResource Fg}"/>
+                        </Canvas>
+                    </Viewbox>
+                    <StackPanel>
+                        <TextBlock Text="FrameGrip" FontSize="19" FontWeight="Bold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
+                        <TextBlock Text="{local:T Main.Subtitle}" Foreground="{DynamicResource FgDim}" FontSize="11.5"/>
+                    </StackPanel>
+                </DockPanel>
+
+                <StackPanel DockPanel.Dock="Bottom" Margin="12,0,12,0">
+                    <Border Height="1" Background="{DynamicResource Line}" Margin="8,0,8,10"/>
+                    <Button x:Name="NavHelp" Style="{StaticResource RailAction}" Height="40" Click="NavHelp_Click"
+                            AutomationProperties.Name="{local:T Rail.Help}">
+                        <StackPanel Orientation="Horizontal" Margin="22,0,8,0">
+                            <TextBlock Style="{StaticResource RailIcon}" Text="&#xE897;" FontSize="16" Width="32"/>
+                            <TextBlock Style="{StaticResource RailLabel}" Text="{local:T Rail.Help}" FontSize="14"/>
+                        </StackPanel>
+                    </Button>
+                    <RadioButton x:Name="NavOptions" Style="{StaticResource RailButton}" Height="40" Checked="Nav_Checked"
+                                 AutomationProperties.Name="{local:T Options.Title}">
+                        <StackPanel Orientation="Horizontal" Margin="22,0,8,0">
+                            <TextBlock Style="{StaticResource RailIcon}" Text="&#xE713;" FontSize="16" Width="32"/>
+                            <TextBlock Style="{StaticResource RailLabel}" Text="{local:T Options.Title}" FontSize="14"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <TextBlock x:Name="VersionText" Foreground="{DynamicResource FgDim}" FontSize="11" Margin="10,10,0,14"/>
+                </StackPanel>
+
+                <StackPanel Margin="12,26,12,0">
+                    <RadioButton x:Name="NavGames" Style="{StaticResource RailButton}" Height="52" Checked="Nav_Checked" Click="NavGames_Click"
+                                 AutomationProperties.Name="{local:T Rail.Games}">
+                        <DockPanel Margin="22,0,8,0">
+                            <TextBlock Style="{StaticResource RailIcon}" Text="&#xE7FC;" Width="32"/>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RailLabel}" Text="{local:T Rail.Games}"/>
+                                <TextBlock Text="{local:T Rail.GamesHint}" Foreground="{DynamicResource FgDim}" FontSize="11"
+                                           TextTrimming="CharacterEllipsis" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="NavOverlay" Style="{StaticResource RailButton}" Height="52" Checked="Nav_Checked"
+                                 AutomationProperties.Name="{local:T Rail.Overlay}">
+                        <DockPanel Margin="22,0,8,0">
+                            <TextBlock Style="{StaticResource RailIcon}" Text="&#xE7F4;" Width="32"/>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RailLabel}" Text="{local:T Rail.Overlay}"/>
+                                <TextBlock Text="{local:T Rail.OverlayHint}" Foreground="{DynamicResource FgDim}" FontSize="11"
+                                           TextTrimming="CharacterEllipsis" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="NavSensors" Style="{StaticResource RailButton}" Height="52" Checked="Nav_Checked"
+                                 AutomationProperties.Name="{local:T Rail.Sensors}">
+                        <DockPanel Margin="22,0,8,0">
+                            <TextBlock Style="{StaticResource RailIcon}" Text="&#xE9D9;" Width="32"/>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RailLabel}" Text="{local:T Rail.Sensors}"/>
+                                <TextBlock Text="{local:T Rail.SensorsHint}" Foreground="{DynamicResource FgDim}" FontSize="11"
+                                           TextTrimming="CharacterEllipsis" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </RadioButton>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="52"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- BARRA DI STATO: sempre visibile, qualsiasi pagina sia aperta. -->
+            <Border Grid.Row="0" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
+                <DockPanel Margin="28,0,24,0">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="WarnChip" Style="{StaticResource StatusChip}" Visibility="Collapsed" Margin="0,0,10,0"
+                                Background="{DynamicResource WarnSoft}" Click="WarnChip_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE7BA;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                           Foreground="{DynamicResource Warn}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="WarnText" FontSize="12.5" Margin="8,0,0,0" MaxWidth="220"
+                                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Border Style="{StaticResource StatusBox}">
+                            <StackPanel Orientation="Horizontal">
+                                <CheckBox x:Name="StatusOverlay" Style="{StaticResource Toggle}" Content="Overlay" FontSize="12.5"
+                                          FontWeight="SemiBold" IsChecked="{Binding OverlayEnabled}"
+                                          AutomationProperties.Name="{local:T Main.ShowOverlay}" ToolTip="{local:T Main.ShowOverlay}"/>
+                                <TextBlock x:Name="StatusKeyLabel" Text="{local:T Status.Key}" Foreground="{DynamicResource FgDim}" FontSize="11.5"
+                                           VerticalAlignment="Center" Margin="12,0,6,0"/>
+                                <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1"
+                                        CornerRadius="4" Padding="7,1" VerticalAlignment="Center" ToolTip="{local:T Main.ShowHide}">
+                                    <TextBlock Text="{Binding HotkeyName}" FontSize="11" FontWeight="SemiBold"/>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                        <Button x:Name="LimitChip" Style="{StaticResource StatusChip}" Margin="10,0,0,0" Click="LimitChip_Click"
+                                ToolTip="{local:T Status.LimitTip}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xEC4A;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                           Foreground="{DynamicResource AccentText}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="LimitChipText" FontSize="12.5" FontWeight="SemiBold" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="LimitChipScope" FontSize="11.5" Foreground="{DynamicResource FgDim}" Margin="8,0,0,0"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="StatusRecord" Style="{StaticResource StatusChip}" Margin="10,0,0,0" MinWidth="112"
+                                Click="RecordButton_Click" ToolTip="{local:T Status.RecordTip}">
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="10" Height="10" Fill="{DynamicResource Danger}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="StatusRecordText" FontSize="12.5" FontWeight="SemiBold" Margin="8,0,0,0"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                    <Grid DockPanel.Dock="Left" Width="18" Height="18" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <Ellipse x:Name="GameRing" StrokeThickness="1.5" Opacity="0.5"/>
+                        <Ellipse x:Name="GameDot" Width="10" Height="10"/>
+                    </Grid>
+                    <TextBlock x:Name="GameText" FontSize="13.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                               Margin="0,0,16,0"/>
+                </DockPanel>
+            </Border>
+
+            <!-- Titolo della pagina aperta: lo scrive il codice. -->
+            <DockPanel x:Name="PageHeader" Grid.Row="1" Margin="28,18,28,16">
+                <ContentControl x:Name="HeaderTools" DockPanel.Dock="Right" Focusable="False" VerticalAlignment="Center" Margin="20,0,0,0"/>
+                <StackPanel>
+                    <TextBlock x:Name="PageTitle" FontSize="26" FontWeight="Bold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
+                    <TextBlock x:Name="PageSub" FontSize="13.5" Foreground="{DynamicResource FgDim}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                </StackPanel>
+            </DockPanel>
+
+            <Grid Grid.Row="2" Margin="28,0,28,24">
+                <!-- GIOCHI: l'elenco dei giochi e la pagina di ciascuno (costruiti dal codice, vedi GamesPage). -->
+                <Grid x:Name="PageGames">
+                    <ContentControl x:Name="GamesHost" Focusable="False"/>
+                    <!-- Registrazione di una sessione: il codice la sposta nella pagina del gioco. -->
+                    <StackPanel x:Name="RecordPanel" Visibility="Collapsed">
+                        <DockPanel>
+                            <Button x:Name="OpenBenchFolder" DockPanel.Dock="Right" Style="{StaticResource LinkButton}"
+                                    Click="OpenBenchFolder_Click" VerticalAlignment="Center" Padding="0,2"
+                                    AutomationProperties.Name="{local:T Bench.OpenFolder}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE8B7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+                                               Foreground="{DynamicResource AccentText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock Text="{local:T Bench.OpenFolder}" FontSize="12.5" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource AccentText}"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="RecordButton" Style="{StaticResource DarkButton}" Content="{local:T Bench.Start}"
+                                    Click="RecordButton_Click" Padding="14,7" FontSize="13"/>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                                <TextBlock Text="{local:T Game.OrPress}" Foreground="{DynamicResource FgDim}" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <Border Background="{DynamicResource Control}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1"
+                                        CornerRadius="4" Padding="7,1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding RecordName}" FontSize="11" FontWeight="SemiBold"/>
+                                </Border>
+                                <Button Style="{StaticResource LinkButton}" Click="GoHotkeys_Click" Padding="0,2" Margin="10,0,0,0"
+                                        VerticalAlignment="Center" Content="{local:T Keys.Change}" FontSize="12" Foreground="{DynamicResource AccentText}"
+                                        AutomationProperties.Name="{local:T Keys.Open}" ToolTip="{local:T Keys.Open}"/>
+                            </StackPanel>
+                        </DockPanel>
+                        <TextBlock x:Name="BenchText" Foreground="{DynamicResource FgDim}" FontSize="12" TextWrapping="Wrap"
+                                   FontFamily="Cascadia Mono, Consolas" Margin="0,12,0,0"
+                                   Text="{local:T Bench.Intro}"/>
+                    </StackPanel>
+                </Grid>
+
+                <!-- OVERLAY: aspetto a sinistra, anteprima grande a destra. -->
+                <Grid x:Name="PageOverlay" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <!-- in quote (*): l'anteprima cresce con la finestra; la barra in mezzo la allarga o la stringe -->
+                        <ColumnDefinition x:Name="ColLook" Width="0.66*" MinWidth="420"/>
+                        <ColumnDefinition Width="20"/>
+                        <ColumnDefinition x:Name="ColOvlPreview" Width="0.34*" MinWidth="300" MaxWidth="1100"/>
+                    </Grid.ColumnDefinitions>
+                    <GridSplitter x:Name="OvlSplitter" Grid.Column="1" Style="{StaticResource PanelSplitterV}" MouseDoubleClick="Splitter_Reset"
+                                  DragCompleted="Splitter_DragCompleted" ToolTip="{local:T Main.SplitterTip}"
+                                  AutomationProperties.Name="{local:T Main.SplitterTip}"/>
+                    <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" Focusable="False">
+                        <StackPanel x:Name="PageLook" Margin="0,0,10,0">
+                            <!-- STILE: i nomi degli stili restano in inglese in tutte le lingue. -->
+                            <Border Style="{StaticResource PageCard}">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,14">
+                                        <TextBlock Text="&#xF0E2;" Style="{StaticResource CardIcon}"/>
+                                        <TextBlock Text="{local:T Ovl.Style}" Style="{StaticResource CardTitle}"/>
+                                    </DockPanel>
+                                    <ListBox x:Name="StyleList" Style="{StaticResource CardList}" SelectedIndex="{Binding Layout}">
+                                        <ListBoxItem>
+                                            <StackPanel Width="68">
+                                                <!-- Miniature degli stili: seguono il tema dell'app per restare visibili anche sul chiaro. -->
+                                                <Canvas Width="64" Height="36">
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="1" Width="30" Height="5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="50" Canvas.Top="1" Width="14" Height="5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="11" Width="24" Height="5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="50" Canvas.Top="11" Width="14" Height="5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="21" Width="34" Height="5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="50" Canvas.Top="21" Width="14" Height="5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="31" Width="20" Height="5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="50" Canvas.Top="31" Width="14" Height="5" Fill="{DynamicResource Fg}"/>
+                                                </Canvas>
+                                                <TextBlock Text="{local:T Layout.List}" FontSize="12" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                            </StackPanel>
+                                        </ListBoxItem>
+                                        <ListBoxItem>
+                                            <StackPanel Width="68">
+                                                <Canvas Width="64" Height="36">
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="13" Width="64" Height="10" Fill="{DynamicResource LineStrong}" RadiusX="3" RadiusY="3"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="16" Width="6" Height="4" Fill="#7CE38B"/>
+                                                    <Rectangle Canvas.Left="13" Canvas.Top="16" Width="9" Height="4" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="27" Canvas.Top="16" Width="6" Height="4" Fill="#5CC8FF"/>
+                                                    <Rectangle Canvas.Left="36" Canvas.Top="16" Width="9" Height="4" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="50" Canvas.Top="16" Width="6" Height="4" Fill="#FFB454"/>
+                                                </Canvas>
+                                                <TextBlock Text="{local:T Layout.Bar}" FontSize="12" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                            </StackPanel>
+                                        </ListBoxItem>
+                                        <!-- Grid HUD: tabella fitta, una riga per sensore, componenti nell'ordine dell'utente. -->
+                                        <ListBoxItem>
+                                            <StackPanel Width="68">
+                                                <Canvas Width="64" Height="36">
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="1" Width="2" Height="5" Fill="#7CE38B"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="2" Width="14" Height="3" Fill="#7CE38B"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="9" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="24" Canvas.Top="9" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="14" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="24" Canvas.Top="14" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="19" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="24" Canvas.Top="19" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="24" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="24" Canvas.Top="24" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="29" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="24" Canvas.Top="29" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="33" Canvas.Top="1" Width="2" Height="5" Fill="#5CC8FF"/>
+                                                    <Rectangle Canvas.Left="37" Canvas.Top="2" Width="14" Height="3" Fill="#5CC8FF"/>
+                                                    <Rectangle Canvas.Left="37" Canvas.Top="9" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="57" Canvas.Top="9" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="37" Canvas.Top="14" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="57" Canvas.Top="14" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="37" Canvas.Top="19" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="57" Canvas.Top="19" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="37" Canvas.Top="24" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="57" Canvas.Top="24" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="37" Canvas.Top="29" Width="16" Height="2.5" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="57" Canvas.Top="29" Width="6" Height="2.5" Fill="{DynamicResource FgDim}"/>
+                                                </Canvas>
+                                                <TextBlock Text="{local:T Layout.Grid}" FontSize="12" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                            </StackPanel>
+                                        </ListBoxItem>
+                                        <!-- Console: terminale a caratteri fissi, "[ gpu ]" e voci con i puntini, colonne tra un componente e l'altro. -->
+                                        <ListBoxItem>
+                                            <StackPanel Width="68">
+                                                <Canvas Width="64" Height="36">
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="0" Width="64" Height="36" Stroke="#39FF7A" StrokeThickness="1" RadiusX="2" RadiusY="2"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="4" Width="10" Height="3" Fill="#39FF7A"/>
+                                                    <Rectangle Canvas.Left="16" Canvas.Top="4" Width="22" Height="3" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="11" Width="14" Height="2.5" Fill="#7CE38B"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="17.0" Width="9" Height="2" Fill="#B7E8C4"/>
+                                                    <Rectangle Canvas.Left="14" Canvas.Top="17.0" Width="8" Height="2" Fill="#2E6A48"/>
+                                                    <Rectangle Canvas.Left="23" Canvas.Top="17.0" Width="6" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="21.5" Width="9" Height="2" Fill="#B7E8C4"/>
+                                                    <Rectangle Canvas.Left="14" Canvas.Top="21.5" Width="8" Height="2" Fill="#2E6A48"/>
+                                                    <Rectangle Canvas.Left="23" Canvas.Top="21.5" Width="6" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="26.0" Width="9" Height="2" Fill="#B7E8C4"/>
+                                                    <Rectangle Canvas.Left="14" Canvas.Top="26.0" Width="8" Height="2" Fill="#2E6A48"/>
+                                                    <Rectangle Canvas.Left="23" Canvas.Top="26.0" Width="6" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="4" Canvas.Top="30.5" Width="9" Height="2" Fill="#B7E8C4"/>
+                                                    <Rectangle Canvas.Left="14" Canvas.Top="30.5" Width="8" Height="2" Fill="#2E6A48"/>
+                                                    <Rectangle Canvas.Left="23" Canvas.Top="30.5" Width="6" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="34" Canvas.Top="11" Width="14" Height="2.5" Fill="#5CC8FF"/>
+                                                    <Rectangle Canvas.Left="34" Canvas.Top="17.0" Width="9" Height="2" Fill="#B7E8C4"/>
+                                                    <Rectangle Canvas.Left="44" Canvas.Top="17.0" Width="8" Height="2" Fill="#2E6A48"/>
+                                                    <Rectangle Canvas.Left="53" Canvas.Top="17.0" Width="6" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="34" Canvas.Top="21.5" Width="9" Height="2" Fill="#B7E8C4"/>
+                                                    <Rectangle Canvas.Left="44" Canvas.Top="21.5" Width="8" Height="2" Fill="#2E6A48"/>
+                                                    <Rectangle Canvas.Left="53" Canvas.Top="21.5" Width="6" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="34" Canvas.Top="26.0" Width="9" Height="2" Fill="#B7E8C4"/>
+                                                    <Rectangle Canvas.Left="44" Canvas.Top="26.0" Width="8" Height="2" Fill="#2E6A48"/>
+                                                    <Rectangle Canvas.Left="53" Canvas.Top="26.0" Width="6" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="34" Canvas.Top="30.5" Width="9" Height="2" Fill="#B7E8C4"/>
+                                                    <Rectangle Canvas.Left="44" Canvas.Top="30.5" Width="8" Height="2" Fill="#2E6A48"/>
+                                                    <Rectangle Canvas.Left="53" Canvas.Top="30.5" Width="6" Height="2" Fill="{DynamicResource Fg}"/>
+                                                </Canvas>
+                                                <TextBlock Text="{local:T Layout.Console}" FontSize="12" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                            </StackPanel>
+                                        </ListBoxItem>
+                                        <!-- Dashboard: un riquadro per sensore con icona, due per riga, sotto l'intestazione del componente. -->
+                                        <ListBoxItem>
+                                            <StackPanel Width="68">
+                                                <Canvas Width="64" Height="36">
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="0" Width="64" Height="7" Stroke="{DynamicResource LineStrong}" StrokeThickness="1" RadiusX="2" RadiusY="2"/>
+                                                    <Rectangle Canvas.Left="1" Canvas.Top="5" Width="62" Height="1.5" Fill="#43E06A"/>
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="9" Width="31" Height="12" Stroke="{DynamicResource LineStrong}" StrokeThickness="1" RadiusX="2" RadiusY="2"/>
+                                                    <Rectangle Canvas.Left="33" Canvas.Top="9" Width="31" Height="12" Stroke="{DynamicResource LineStrong}" StrokeThickness="1" RadiusX="2" RadiusY="2"/>
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="23" Width="31" Height="12" Stroke="{DynamicResource LineStrong}" StrokeThickness="1" RadiusX="2" RadiusY="2"/>
+                                                    <Rectangle Canvas.Left="33" Canvas.Top="23" Width="31" Height="12" Stroke="{DynamicResource LineStrong}" StrokeThickness="1" RadiusX="2" RadiusY="2"/>
+                                                    <Ellipse Canvas.Left="3" Canvas.Top="12.5" Width="5" Height="5" Fill="#43E06A"/>
+                                                    <Ellipse Canvas.Left="36" Canvas.Top="12.5" Width="5" Height="5" Fill="#43E06A"/>
+                                                    <Ellipse Canvas.Left="3" Canvas.Top="26.5" Width="5" Height="5" Fill="#43E06A"/>
+                                                    <Ellipse Canvas.Left="36" Canvas.Top="26.5" Width="5" Height="5" Fill="#43E06A"/>
+                                                    <Rectangle Canvas.Left="17" Canvas.Top="14" Width="11" Height="3" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="50" Canvas.Top="14" Width="11" Height="3" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="17" Canvas.Top="28" Width="11" Height="3" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="50" Canvas.Top="28" Width="11" Height="3" Fill="{DynamicResource Fg}"/>
+                                                </Canvas>
+                                                <TextBlock Text="{local:T Layout.Dashboard}" FontSize="12" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                            </StackPanel>
+                                        </ListBoxItem>
+                                        <!-- Anelli: ogni valore come un anello che si riempie rispetto al suo fondo scala. -->
+                                        <ListBoxItem>
+                                            <StackPanel Width="68">
+                                                <Canvas Width="64" Height="36">
+                                                    <Rectangle Canvas.Left="0" Canvas.Top="2" Width="16" Height="2.5" Fill="#43E06A"/>
+                                                    <Rectangle Canvas.Left="20" Canvas.Top="2.75" Width="44" Height="1" Fill="#43E06A"/>
+                                                    <Ellipse Canvas.Left="1" Canvas.Top="10" Width="13" Height="13" Stroke="{DynamicResource LineStrong}" StrokeThickness="2.5"/>
+                                                    <Ellipse Canvas.Left="17.5" Canvas.Top="10" Width="13" Height="13" Stroke="#43E06A" StrokeThickness="2.5"/>
+                                                    <Ellipse Canvas.Left="34" Canvas.Top="10" Width="13" Height="13" Stroke="{DynamicResource LineStrong}" StrokeThickness="2.5"/>
+                                                    <Ellipse Canvas.Left="50.5" Canvas.Top="10" Width="13" Height="13" Stroke="#FFB020" StrokeThickness="2.5"/>
+                                                    <Path Canvas.Left="1" Canvas.Top="10" Data="M 6.5,1.25 A 5.25,5.25 0 1 1 1.25,6.5" Stroke="#43E06A" StrokeThickness="2.5"/>
+                                                    <Path Canvas.Left="34" Canvas.Top="10" Data="M 6.5,1.25 A 5.25,5.25 0 0 1 11.75,6.5" Stroke="#43E06A" StrokeThickness="2.5"/>
+                                                    <Rectangle Canvas.Left="2" Canvas.Top="28" Width="11" Height="2" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="18.5" Canvas.Top="28" Width="11" Height="2" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="35" Canvas.Top="28" Width="11" Height="2" Fill="{DynamicResource FgDim}"/>
+                                                    <Rectangle Canvas.Left="51.5" Canvas.Top="28" Width="11" Height="2" Fill="{DynamicResource FgDim}"/>
+                                                </Canvas>
+                                                <TextBlock Text="{local:T Layout.Rings}" FontSize="12" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                            </StackPanel>
+                                        </ListBoxItem>
+                                        <!-- Icone: le icone al posto dei nomi, due valori per riga, una barra colorata per componente. -->
+                                        <ListBoxItem>
+                                            <StackPanel Width="68">
+                                                <Canvas Width="64" Height="36">
+                                                    <Rectangle Canvas.Left="10" Canvas.Top="0" Width="44" Height="17" Stroke="{DynamicResource LineStrong}" StrokeThickness="1" RadiusX="2" RadiusY="2"/>
+                                                    <Rectangle Canvas.Left="11" Canvas.Top="2" Width="2" Height="13" Fill="#43E06A"/>
+                                                    <Ellipse Canvas.Left="15" Canvas.Top="3.5" Width="4" Height="4" Fill="#43E06A"/>
+                                                    <Rectangle Canvas.Left="21" Canvas.Top="4.5" Width="8" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Ellipse Canvas.Left="34" Canvas.Top="3.5" Width="4" Height="4" Fill="#43E06A"/>
+                                                    <Rectangle Canvas.Left="40" Canvas.Top="4.5" Width="10" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Ellipse Canvas.Left="15" Canvas.Top="10" Width="4" Height="4" Fill="#43E06A"/>
+                                                    <Rectangle Canvas.Left="21" Canvas.Top="11" Width="10" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Ellipse Canvas.Left="34" Canvas.Top="10" Width="4" Height="4" Fill="#43E06A"/>
+                                                    <Rectangle Canvas.Left="40" Canvas.Top="11" Width="7" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Rectangle Canvas.Left="10" Canvas.Top="19" Width="44" Height="17" Stroke="{DynamicResource LineStrong}" StrokeThickness="1" RadiusX="2" RadiusY="2"/>
+                                                    <Rectangle Canvas.Left="11" Canvas.Top="21" Width="2" Height="13" Fill="#FF4A4A"/>
+                                                    <Ellipse Canvas.Left="15" Canvas.Top="22.5" Width="4" Height="4" Fill="#FF4A4A"/>
+                                                    <Rectangle Canvas.Left="21" Canvas.Top="23.5" Width="8" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Ellipse Canvas.Left="34" Canvas.Top="22.5" Width="4" Height="4" Fill="#FF4A4A"/>
+                                                    <Rectangle Canvas.Left="40" Canvas.Top="23.5" Width="10" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Ellipse Canvas.Left="15" Canvas.Top="29" Width="4" Height="4" Fill="#FF4A4A"/>
+                                                    <Rectangle Canvas.Left="21" Canvas.Top="30" Width="10" Height="2" Fill="{DynamicResource Fg}"/>
+                                                    <Ellipse Canvas.Left="34" Canvas.Top="29" Width="4" Height="4" Fill="#FF4A4A"/>
+                                                    <Rectangle Canvas.Left="40" Canvas.Top="30" Width="7" Height="2" Fill="{DynamicResource Fg}"/>
+                                                </Canvas>
+                                                <TextBlock Text="{local:T Layout.Icons}" FontSize="12" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                            </StackPanel>
+                                        </ListBoxItem>
+                                    </ListBox>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource PageCard}">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,14">
+                                        <TextBlock Text="&#xE790;" Style="{StaticResource CardIcon}"/>
+                                        <TextBlock Text="{local:T Ovl.Colors}" Style="{StaticResource CardTitle}"/>
+                                    </DockPanel>
+                                    <ListBox Style="{StaticResource CardList}" SelectedIndex="{Binding Theme}"
+                                             ItemsSource="{x:Static local:Theme.All}">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Width="68">
+                                                    <!-- I campioni dei temi dell'overlay non seguono il tema dell'app. -->
+                                                    <Border Background="{Binding SwatchBg}" CornerRadius="5" Height="24"
+                                                            BorderBrush="{DynamicResource Line}" BorderThickness="1">
+                                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                            <Ellipse Width="9" Height="9" Margin="2" Fill="{Binding Gpu}"/>
+                                                            <Ellipse Width="9" Height="9" Margin="2" Fill="{Binding Cpu}"/>
+                                                            <Ellipse Width="9" Height="9" Margin="2" Fill="{Binding Fps}"/>
+                                                            <Ellipse Width="9" Height="9" Margin="2" Fill="{Binding Pace}"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                    <TextBlock FontSize="12" HorizontalAlignment="Center" Margin="0,4,0,0">
+                                                        <TextBlock.Text>
+                                                            <MultiBinding Converter="{StaticResource LocKey}" ConverterParameter="OverlayTheme.">
+                                                                <Binding Path="Name"/>
+                                                                <Binding Path="Language" Source="{x:Static local:Loc.Instance}"/>
+                                                            </MultiBinding>
+                                                        </TextBlock.Text>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <DockPanel Margin="0,12,0,4">
+                                        <TextBlock DockPanel.Dock="Right" Text="{Binding Scale, StringFormat={}{0:P0}}" FontSize="13" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{local:T Main.TextSize}" FontSize="14"/>
+                                    </DockPanel>
+                                    <Slider Minimum="0.6" Maximum="2.5" Value="{Binding Scale}" TickFrequency="0.05" IsSnapToTickEnabled="True"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource PageCard}">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,14">
+                                        <TextBlock Text="&#xE7C2;" Style="{StaticResource CardIcon}"/>
+                                        <TextBlock Text="{local:T Ovl.Position}" Style="{StaticResource CardTitle}"/>
+                                    </DockPanel>
+                                    <DockPanel>
+                                        <!-- Schermo in miniatura: cinque punti, uno per ogni posizione. -->
+                                        <Border DockPanel.Dock="Left" Width="150" Height="84" CornerRadius="8" Background="{DynamicResource Control}"
+                                                BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" Margin="0,0,20,0">
+                                            <Grid Margin="8">
+                                                <RadioButton x:Name="Spot0" Tag="0" Style="{StaticResource SpotButton}" GroupName="Spot"
+                                                             HorizontalAlignment="Left" VerticalAlignment="Top" Click="Spot_Click"
+                                                             ToolTip="{local:T Pos.TopLeft}" AutomationProperties.Name="{local:T Pos.TopLeft}"/>
+                                                <RadioButton x:Name="Spot1" Tag="1" Style="{StaticResource SpotButton}" GroupName="Spot"
+                                                             HorizontalAlignment="Center" VerticalAlignment="Top" Click="Spot_Click"
+                                                             ToolTip="{local:T Pos.TopCenter}" AutomationProperties.Name="{local:T Pos.TopCenter}"/>
+                                                <RadioButton x:Name="Spot2" Tag="2" Style="{StaticResource SpotButton}" GroupName="Spot"
+                                                             HorizontalAlignment="Right" VerticalAlignment="Top" Click="Spot_Click"
+                                                             ToolTip="{local:T Pos.TopRight}" AutomationProperties.Name="{local:T Pos.TopRight}"/>
+                                                <RadioButton x:Name="Spot3" Tag="3" Style="{StaticResource SpotButton}" GroupName="Spot"
+                                                             HorizontalAlignment="Left" VerticalAlignment="Bottom" Click="Spot_Click"
+                                                             ToolTip="{local:T Pos.BottomLeft}" AutomationProperties.Name="{local:T Pos.BottomLeft}"/>
+                                                <RadioButton x:Name="Spot4" Tag="4" Style="{StaticResource SpotButton}" GroupName="Spot"
+                                                             HorizontalAlignment="Right" VerticalAlignment="Bottom" Click="Spot_Click"
+                                                             ToolTip="{local:T Pos.BottomRight}" AutomationProperties.Name="{local:T Pos.BottomRight}"/>
+                                            </Grid>
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock x:Name="PositionName" FontSize="14" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{local:T Ovl.PositionHelp}" Foreground="{DynamicResource FgDim}" FontSize="12"
+                                                       TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </StackPanel>
+                            </Border>
+                            <!-- AVANZATE: chiuse all'inizio. -->
+                            <Border Style="{StaticResource PageCard}" Padding="0">
+                                <StackPanel>
+                                    <Button x:Name="AdvancedToggle" Style="{StaticResource LinkButton}" Padding="18,14" Click="AdvancedToggle_Click"
+                                            HorizontalContentAlignment="Stretch" AutomationProperties.Name="{local:T Ovl.Advanced}">
+                                        <DockPanel>
+                                            <TextBlock x:Name="AdvancedChevron" DockPanel.Dock="Right" Text="&#xE70D;" FontSize="11"
+                                                       FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource FgDim}"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Text="&#xE713;" Style="{StaticResource CardIcon}"/>
+                                            <StackPanel>
+                                                <TextBlock Text="{local:T Ovl.Advanced}" Style="{StaticResource CardTitle}"/>
+                                                <TextBlock Text="{local:T Ovl.AdvancedSub}" Foreground="{DynamicResource FgDim}" FontSize="12"
+                                                           TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Button>
+                                    <StackPanel x:Name="AdvancedBody" Visibility="Collapsed" Margin="18,0,18,18">
+                                        <TextBlock Text="{local:T Ovl.Font}" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                        <ListBox Style="{StaticResource CardList}" SelectedIndex="{Binding Font}">
+                                            <ListBoxItem>
+                                                <StackPanel Width="68">
+                                                    <TextBlock Text="123" FontFamily="Cascadia Mono, Consolas" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="{local:T Font.Mono}" FontSize="12" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                                </StackPanel>
+                                            </ListBoxItem>
+                                            <ListBoxItem>
+                                                <StackPanel Width="68">
+                                                    <TextBlock Text="123" FontFamily="Segoe UI" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="{local:T Font.Clean}" FontSize="12" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                                </StackPanel>
+                                            </ListBoxItem>
+                                            <ListBoxItem>
+                                                <StackPanel Width="68">
+                                                    <TextBlock Text="123" FontFamily="Bahnschrift, Segoe UI" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="{local:T Font.Tech}" FontSize="12" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                                </StackPanel>
+                                            </ListBoxItem>
+                                        </ListBox>
+                                        <DockPanel Margin="0,8,0,4">
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding Opacity, StringFormat={}{0:P0}}" FontSize="13" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{local:T Main.BgOpacity}" FontSize="14"/>
+                                        </DockPanel>
+                                        <Slider Minimum="0" Maximum="1" Value="{Binding Opacity}" TickFrequency="0.05" IsSnapToTickEnabled="True"/>
+                                        <DockPanel Margin="0,8,0,4" ToolTip="{local:T Main.HdrWhiteTip}">
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding HdrWhiteNits, StringFormat={}{0:0} nit}" FontSize="13" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{local:T Main.HdrWhite}" FontSize="14"/>
+                                        </DockPanel>
+                                        <Slider Minimum="80" Maximum="400" Value="{Binding HdrWhiteNits}" TickFrequency="10" IsSnapToTickEnabled="True"
+                                                ToolTip="{local:T Main.HdrWhiteTip}"/>
+                                        <TextBlock Text="{local:T Ovl.Keys}" FontSize="13" FontWeight="SemiBold" Margin="0,18,0,0"/>
+                                        <!-- I tasti si cambiano tutti insieme nelle Opzioni: qui solo la strada per arrivarci. -->
+                                        <TextBlock Text="{local:T Keys.Where}" Foreground="{DynamicResource FgDim}" FontSize="12"
+                                                   TextWrapping="Wrap" Margin="0,6,0,6"/>
+                                        <Button Style="{StaticResource LinkButton}" Click="GoHotkeys_Click" HorizontalAlignment="Left" Padding="0,2"
+                                                AutomationProperties.Name="{local:T Keys.Open}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="&#xE765;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                                           Foreground="{DynamicResource AccentText}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                <TextBlock Text="{local:T Keys.Open}" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AccentText}"/>
+                                            </StackPanel>
+                                        </Button>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                    <!-- ANTEPRIMA grande, con l'interruttore dell'overlay e la strada per i Sensori. -->
+                    <Border Grid.Column="2" Style="{StaticResource PageCard}" Margin="0" Padding="12">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                                <CheckBox Content="{local:T Ovl.ShowInGames}" Style="{StaticResource Toggle}" IsChecked="{Binding OverlayEnabled}"
+                                          FontWeight="SemiBold" HorizontalAlignment="Left"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <TextBlock Text="{local:T Status.Key}" Foreground="{DynamicResource FgDim}" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <Border Background="{DynamicResource Control}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1"
+                                            CornerRadius="4" Padding="8,2" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding HotkeyName}" FontSize="12" FontWeight="SemiBold"/>
+                                    </Border>
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel DockPanel.Dock="Bottom" Margin="0,16,0,0">
+                                <DockPanel>
+                                    <TextBlock Text="&#xE946;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                               Foreground="{DynamicResource AccentText}" VerticalAlignment="Top" Margin="0,2,10,0"/>
+                                    <TextBlock Text="{local:T Ovl.ValuesHelp}" Foreground="{DynamicResource FgDim}" FontSize="12.5" TextWrapping="Wrap"/>
+                                </DockPanel>
+                                <WrapPanel Margin="0,12,0,0">
+                                    <Button Style="{StaticResource DarkButton}" Click="GoSensors_Click" Padding="14,7" Margin="0,0,14,4">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE9D9;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock Text="{local:T Ovl.PickValues}" FontSize="13"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <TextBlock x:Name="ValuesCount" Foreground="{DynamicResource FgDim}" FontSize="12" VerticalAlignment="Center"/>
+                                </WrapPanel>
+                            </StackPanel>
+                            <!-- Anteprima su sfondo grigio (scuro o chiaro): la stessa della guida e della pagina Sensori. -->
+                            <ContentControl x:Name="OverlayPreviewHost" Focusable="False"/>
+                        </DockPanel>
+                    </Border>
+                </Grid>
+
+                <!-- SENSORI: a sinistra cosa mostrare, a destra come appare nell'overlay. -->
+                <Grid x:Name="PageSensors" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <!-- in quote (*): le tre colonne crescono con la finestra; le due barre le ridimensionano -->
+                        <ColumnDefinition x:Name="ColTree" Width="0.27*" MinWidth="290"/>
+                        <ColumnDefinition Width="20"/>
+                        <ColumnDefinition x:Name="ColEntries" Width="0.47*" MinWidth="500"/>
+                        <ColumnDefinition x:Name="ColSensGap" Width="20"/>
+                        <ColumnDefinition x:Name="ColSensPreview" Width="0.26*" MinWidth="260" MaxWidth="1100"/>
+                    </Grid.ColumnDefinitions>
+                    <GridSplitter x:Name="SensTreeSplitter" Grid.Column="1" Style="{StaticResource PanelSplitterV}" MouseDoubleClick="Splitter_Reset"
+                                  DragCompleted="Splitter_DragCompleted" ToolTip="{local:T Main.SplitterTip}"
+                                  AutomationProperties.Name="{local:T Main.SplitterTip}"/>
+                    <!-- tra "Nell'overlay" e l'anteprima: si allarga l'anteprima (nascosta quando la finestra è stretta) -->
+                    <GridSplitter x:Name="SensPreviewSplitter" Grid.Column="3" Style="{StaticResource PanelSplitterV}" MouseDoubleClick="Splitter_Reset"
+                                  DragCompleted="Splitter_DragCompleted" ToolTip="{local:T Main.SplitterTip}"
+                                  AutomationProperties.Name="{local:T Main.SplitterTip}"/>
+                    <!-- 1 · COSA MOSTRARE: elenco scelto per categorie; l'elenco completo resta dietro un clic. -->
+                    <Border Grid.Column="0" Style="{StaticResource PageCard}" Margin="0" Padding="0">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Top" Margin="18,16,18,8">
+                                <DockPanel Margin="0,0,0,12">
+                                    <TextBlock Text="&#xE73E;" Style="{StaticResource CardIcon}"/>
+                                    <TextBlock Text="{local:T Sns.What}" Style="{StaticResource CardTitle}"/>
+                                </DockPanel>
+                                <DockPanel>
+                                    <TextBlock Text="{local:T Sns.Presets}" Foreground="{DynamicResource FgDim}" FontSize="12.5"
+                                               VerticalAlignment="Center" Margin="0,0,10,6"/>
+                                    <WrapPanel x:Name="PresetPanel"/>
+                                </DockPanel>
+                                <Grid Margin="0,8,0,10">
+                                    <TextBox x:Name="SearchBox" Style="{StaticResource DarkBox}" Height="34" Padding="30,0,8,0" VerticalContentAlignment="Center"
+                                             TextChanged="SearchBox_TextChanged"/>
+                                    <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13" IsHitTestVisible="False"
+                                               Foreground="{DynamicResource FgDim}" VerticalAlignment="Center" Margin="11,0,0,0"/>
+                                    <TextBlock x:Name="SearchHint" Text="{local:T Sns.Search}" Foreground="{DynamicResource FgDim}" FontSize="13"
+                                               IsHitTestVisible="False" VerticalAlignment="Center" Margin="31,0,0,0"/>
+                                </Grid>
+                                <Border x:Name="DriverBox" Background="{DynamicResource WarnSoft}" CornerRadius="10"
+                                        Padding="14,10" Margin="0,0,0,10" Visibility="{Binding Visibility, ElementName=DriverPanel}">
+                                    <StackPanel x:Name="DriverPanel" Visibility="Collapsed">
+                                        <TextBlock x:Name="DriverText" Foreground="{DynamicResource FgDim}" FontSize="12.5" TextWrapping="Wrap"/>
+                                        <Button x:Name="DriverButton" Style="{StaticResource DarkButton}" Content="{local:T Driver.Install}"
+                                                Click="DriverButton_Click" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="10,5" FontSize="12.5"
+                                                ToolTip="{local:T Driver.InstallTip}"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                            <ScrollViewer x:Name="CuratedScroll" VerticalScrollBarVisibility="Auto" Focusable="False" Margin="18,0,6,14">
+                                <StackPanel Margin="0,0,12,0">
+                                    <ContentControl x:Name="CuratedHost" Focusable="False"/>
+                                    <Button x:Name="AllSensorsToggle" Style="{StaticResource LinkButton}" Padding="0,4" Margin="0,14,0,8"
+                                            HorizontalAlignment="Left" Click="AllSensorsToggle_Click" AutomationProperties.Name="{local:T Sns.All}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{local:T Sns.All}" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AccentText}"/>
+                                            <TextBlock x:Name="AllSensorsChevron" Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                       FontSize="10" Foreground="{DynamicResource AccentText}" VerticalAlignment="Center" Margin="8,2,0,0"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <TextBlock x:Name="AllSensorsHelp" Text="{local:T Sns.AllHelp}" Foreground="{DynamicResource FgDim}" FontSize="12"
+                                               TextWrapping="Wrap" Margin="0,0,0,8" Visibility="Collapsed"/>
+                                    <!-- Elenco completo: altezza fissa, così resta virtualizzato anche dentro la pagina che scorre. -->
+                                    <Border x:Name="TreeBox" Style="{StaticResource Card}" Padding="8" Height="460" Visibility="Collapsed">
+                                        <Grid>
+                                            <TextBlock x:Name="SensorsEmpty" Text="{local:T Main.Detecting}" Foreground="{DynamicResource FgDim}"
+                                                       FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            <TreeView x:Name="SensorTree" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Fg}"
+                                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                      VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling">
+                                                <TreeView.Resources>
+                                                    <!-- I colori di selezione (SystemColors) li mette il codice secondo il tema: vedi UpdateTreeHighlight. -->
+                                                    <Style TargetType="TreeViewItem">
+                                                        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                                                        <Setter Property="Visibility" Value="{Binding Vis}"/>
+                                                        <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+                                                    </Style>
+
+                                                    <HierarchicalDataTemplate DataType="{x:Type local:HardwareNode}" ItemsSource="{Binding Children}">
+                                                        <StackPanel Orientation="Horizontal" Margin="0,5">
+                                                            <TextBlock Text="{Binding Tag}" Foreground="{DynamicResource AccentText}" FontWeight="Bold"
+                                                                       FontSize="12" Width="38" VerticalAlignment="Center"/>
+                                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/>
+                                                        </StackPanel>
+                                                    </HierarchicalDataTemplate>
+
+                                                    <DataTemplate DataType="{x:Type local:SensorNode}">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <CheckBox IsChecked="{Binding IsSelected}" Margin="0,3" Width="200">
+                                                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
+                                                            </CheckBox>
+                                                            <TextBlock Text="{Binding TypeName}" Foreground="{DynamicResource FgDim}" FontSize="12"
+                                                                       Width="110" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock Text="{Binding ValueText}" Width="84" TextAlignment="Right"
+                                                                       FontFamily="Cascadia Mono, Consolas" FontSize="13" VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </TreeView.Resources>
+                                            </TreeView>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </DockPanel>
+                    </Border>
+                    <!-- 2 · NELL'OVERLAY: le righe scelte, da riordinare, rinominare e colorare. -->
+                    <Border Grid.Column="2" Style="{StaticResource PageCard}" Margin="0" Padding="18,16,8,10">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Top" Margin="0,0,10,10">
+                                <DockPanel>
+                                    <!-- finestra stretta: l'anteprima si apre e si chiude da qui -->
+                                    <ToggleButton x:Name="SensPreviewToggle" DockPanel.Dock="Right" Visibility="Collapsed" Checked="SensPreviewToggle_Click" Unchecked="SensPreviewToggle_Click"
+                                                  Cursor="Hand" AutomationProperties.Name="{local:T Sns.Preview}" ToolTip="{local:T Sns.PreviewTip}">
+                                        <ToggleButton.Template>
+                                            <ControlTemplate TargetType="ToggleButton">
+                                                <Border x:Name="B" CornerRadius="8" Padding="10,5" BorderThickness="1"
+                                                        Background="{DynamicResource Control}" BorderBrush="{DynamicResource Line}">
+                                                    <ContentPresenter/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsChecked" Value="True">
+                                                        <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentSoft}"/>
+                                                        <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                                        <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </ToggleButton.Template>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE7B3;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                                       Foreground="{DynamicResource AccentText}" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                            <TextBlock Text="{local:T Sns.Preview}" FontSize="12.5" Foreground="{DynamicResource Fg}" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </ToggleButton>
+                                    <TextBlock Text="&#xE7F4;" Style="{StaticResource CardIcon}"/>
+                                    <TextBlock Text="{local:T Sns.InOverlay}" Style="{StaticResource CardTitle}"/>
+                                </DockPanel>
+                                <TextBlock Foreground="{DynamicResource FgDim}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"
+                                           Text="{local:T Main.CustomizeHelp}"/>
+                            </StackPanel>
+                            <ScrollViewer x:Name="EntryScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <Grid>
+                                <!-- Le righe si riordinano anche trascinandole con il mouse (vedi "trascinamento" nel codice). -->
+                                <ItemsControl x:Name="EntryList" PreviewMouseLeftButtonDown="EntryList_PreviewMouseLeftButtonDown"
+                                              PreviewMouseMove="EntryList_PreviewMouseMove" PreviewMouseLeftButtonUp="EntryList_PreviewMouseLeftButtonUp"
+                                              LostMouseCapture="EntryList_LostMouseCapture">
+                                    <ItemsControl.Resources>
+                                        <DataTemplate DataType="{x:Type local:ToggleEntry}">
+                                            <StackPanel Margin="38,10,0,3" Opacity="{Binding RowOpacity}">
+                                                <CheckBox IsChecked="{Binding IsShown}" ToolTip="{local:T Entry.ShowHide}">
+                                                    <TextBlock Text="{Binding Title}" FontWeight="Bold" FontSize="14"/>
+                                                </CheckBox>
+                                                <TextBlock Text="{Binding Description}" Foreground="{DynamicResource FgDim}" FontSize="11.5"
+                                                           TextWrapping="Wrap" Margin="27,2,0,4"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                        <DataTemplate DataType="{x:Type local:GroupEntry}">
+                                            <StackPanel Margin="0,8,0,3" Opacity="{Binding RowOpacity}">
+                                            <DockPanel LastChildFill="True">
+                                                <TextBlock DockPanel.Dock="Left" Style="{StaticResource DragGrip}" Visibility="{Binding GripVis}"/>
+                                                <ToggleButton DockPanel.Dock="Left" Style="{StaticResource ExpandArrow}" IsChecked="{Binding IsExpanded, Mode=TwoWay}"
+                                                              Visibility="{Binding ArrowVis}" ToolTip="{Binding ExpandTip}"
+                                                              AutomationProperties.Name="{Binding ExpandName}" VerticalAlignment="Center"/>
+                                                <CheckBox DockPanel.Dock="Left" IsChecked="{Binding IsShown}" Visibility="{Binding ToggleVis}" Margin="0,0,8,0"
+                                                          VerticalAlignment="Center" ToolTip="{local:T Entry.ShowHide}"/>
+                                                <Button DockPanel.Dock="Left" Style="{StaticResource Swatch}" Background="{Binding ColorBrush}" Click="Swatch_Click"
+                                                        ToolTip="{local:T Entry.LabelColor}"/>
+                                                <!-- a destra, dall'esterno verso l'interno -->
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="↓" Click="GroupDown_Click"
+                                                        Visibility="{Binding MoveVis}" ToolTip="{local:T Entry.RowDown}"/>
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="↑" Click="GroupUp_Click" Margin="8,0,0,0"
+                                                        Visibility="{Binding MoveVis}" ToolTip="{local:T Entry.RowUp}"/>
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="A+" Click="SizeUp_Click"
+                                                        Margin="0" ToolTip="{local:T Entry.RowLarger}"/>
+                                                <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Width="36" TextAlignment="Center" VerticalAlignment="Center"
+                                                           FontSize="12" FontWeight="SemiBold"/>
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="A−" Click="SizeDown_Click"
+                                                        Margin="8,0,0,0" ToolTip="{local:T Entry.RowSmaller}"/>
+                                                <!-- "Nome modello" come icona: il testo intero è nel suggerimento e nel nome letto dal lettore di schermo -->
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="&#xE8AC;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                        FontSize="12" Click="UseHardwareName_Click" Visibility="{Binding MoveVis}" Margin="6,0,0,0"
+                                                        AutomationProperties.Name="{local:T Entry.ModelName}">
+                                                    <Button.ToolTip>
+                                                        <StackPanel>
+                                                            <TextBlock Text="{local:T Entry.ModelName}" FontWeight="SemiBold"/>
+                                                            <TextBlock Text="{Binding HardwareName}"/>
+                                                        </StackPanel>
+                                                    </Button.ToolTip>
+                                                </Button>
+                                                <!-- il nome prende lo spazio che resta, fino a 170 px, sempre allineato a sinistra -->
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" MinWidth="90" MaxWidth="170"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBox Style="{StaticResource DarkBox}" FontWeight="Bold" MaxLength="40"
+                                                             Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}" LostFocus="NameBox_LostFocus"
+                                                             ToolTip="{local:T Entry.RowLabel}"/>
+                                                </Grid>
+                                            </DockPanel>
+                                            <!-- A gruppo chiuso, sotto il nome: quante voci contiene (a destra finirebbe fuori dal riquadro). -->
+                                            <TextBlock Text="{Binding CountText}" Visibility="{Binding CountVis}" Foreground="{DynamicResource FgDim}"
+                                                       FontSize="12" Margin="65,2,0,2"/>
+                                            <TextBlock Text="{Binding Description}" Visibility="{Binding DescriptionVis}" Foreground="{DynamicResource FgDim}"
+                                                       FontSize="11.5" TextWrapping="Wrap" Margin="65,2,0,2"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                        <DataTemplate DataType="{x:Type local:SensorEntry}">
+                                            <StackPanel Margin="28,2,0,2" Visibility="{Binding RowVis}">
+                                            <DockPanel LastChildFill="True" Opacity="{Binding RowOpacity}">
+                                                <TextBlock DockPanel.Dock="Left" Style="{StaticResource DragGrip}"/>
+                                                <CheckBox DockPanel.Dock="Left" IsChecked="{Binding IsShown}" Visibility="{Binding FrameVis}" Margin="0,0,8,0"
+                                                          VerticalAlignment="Center" ToolTip="{local:T Entry.ShowHideValue}"/>
+                                                <Button DockPanel.Dock="Left" Style="{StaticResource Swatch}" Background="{Binding ColorBrush}" Click="Swatch_Click"
+                                                        ToolTip="{local:T Entry.ValueColor}"/>
+                                                <!-- a destra, dall'esterno verso l'interno; la ✕ tiene il suo posto anche quando manca, così le colonne restano allineate -->
+                                                <Grid DockPanel.Dock="Right" Width="26">
+                                                    <Button Style="{StaticResource RowMini}" Content="✕" Click="SensorRemove_Click" ToolTip="{local:T Entry.Remove}" Visibility="{Binding RemoveVis}"/>
+                                                </Grid>
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="↓" Click="SensorDown_Click" ToolTip="{local:T Entry.Down}"/>
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="↑" Click="SensorUp_Click" Margin="8,0,0,0" ToolTip="{local:T Entry.Up}"/>
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="A+" Click="SizeUp_Click"
+                                                        Margin="0" ToolTip="{local:T Entry.SensorLarger}"/>
+                                                <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Width="36" TextAlignment="Center" VerticalAlignment="Center"
+                                                           FontSize="12" FontWeight="SemiBold"/>
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource RowMini}" Content="A−" Click="SizeDown_Click"
+                                                        Margin="8,0,0,0" ToolTip="{local:T Entry.SensorSmaller}"/>
+                                                <TextBlock DockPanel.Dock="Right" Text="{Binding ValueText}" Width="60" TextAlignment="Right" VerticalAlignment="Center"
+                                                           FontFamily="Cascadia Mono, Consolas" FontSize="13" Foreground="{DynamicResource FgDim}"/>
+                                                <!-- il nome prende lo spazio che resta, fino a 150 px, sempre allineato a sinistra -->
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" MinWidth="80" MaxWidth="150"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBox Style="{StaticResource DarkBox}" MaxLength="28"
+                                                             Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}" LostFocus="NameBox_LostFocus"
+                                                             ToolTip="{local:T Entry.SensorName}"/>
+                                                </Grid>
+                                            </DockPanel>
+                                            <TextBlock Text="{Binding Description}" Visibility="{Binding FrameVis}" Foreground="{DynamicResource FgDim}"
+                                                       FontSize="11.5" TextWrapping="Wrap" Margin="43,2,0,4" Opacity="{Binding RowOpacity}"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.Resources>
+                                </ItemsControl>
+                                <!-- La riga "sollevata" mentre la si trascina: immagine della riga, un po' più grande,
+                                     con ombra e bordo d'accento. La muove il codice (vedi "trascinamento"). -->
+                                <Canvas IsHitTestVisible="False">
+                                    <Border x:Name="DragGhost" Visibility="Collapsed" BorderBrush="{DynamicResource Accent}" BorderThickness="1.5"
+                                            CornerRadius="8" Background="{DynamicResource Panel}" RenderTransformOrigin="0.5,0.5">
+                                        <Border.RenderTransform>
+                                            <TransformGroup>
+                                                <ScaleTransform x:Name="DragGhostScale"/>
+                                                <TranslateTransform x:Name="DragGhostMove"/>
+                                            </TransformGroup>
+                                        </Border.RenderTransform>
+                                        <Border.Effect>
+                                            <DropShadowEffect BlurRadius="22" ShadowDepth="6" Direction="270" Opacity="0.45" Color="Black"/>
+                                        </Border.Effect>
+                                        <Grid>
+                                            <Border Background="{DynamicResource AccentSoft}" CornerRadius="6.5"/>
+                                            <Image x:Name="DragGhostImage" Stretch="None" HorizontalAlignment="Left" VerticalAlignment="Top"/>
+                                        </Grid>
+                                    </Border>
+                                </Canvas>
+                                </Grid>
+                            </ScrollViewer>
+                        </DockPanel>
+                    </Border>
+                    <!-- ANTEPRIMA: come apparirà l'overlay, aggiornata a ogni spunta, nome, colore, grandezza e spostamento. -->
+                    <Border x:Name="SensPreviewCard" Grid.Column="4" Style="{StaticResource PageCard}" Margin="0" Padding="10">
+                        <DockPanel>
+                            <DockPanel DockPanel.Dock="Top" Margin="2,0,0,10">
+                                <TextBlock Text="&#xE7B3;" Style="{StaticResource CardIcon}"/>
+                                <TextBlock Text="{local:T Sns.Preview}" Style="{StaticResource CardTitle}"/>
+                            </DockPanel>
+                            <ContentControl x:Name="SensPreviewHost" Focusable="False"/>
+                        </DockPanel>
+                    </Border>
+                </Grid>
+
+                <!-- OPZIONI: la stessa pagina che prima era una finestra a parte. -->
+                <ScrollViewer x:Name="PageOptions" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Focusable="False">
+                    <Border Style="{StaticResource Card}" Padding="24,6,24,22" MaxWidth="560" HorizontalAlignment="Left"
+                            VerticalAlignment="Top">
+                        <local:OptionsPage x:Name="OptionsView"/>
+                    </Border>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+
+        <!-- Tavolozza dei colori, condivisa da tutte le voci. -->
+        <Popup x:Name="ColorPopup" StaysOpen="True" Placement="Bottom" AllowsTransparency="True">
+            <local:ColorPicker x:Name="Picker"/>
+        </Popup>
+    </Grid>
+</Window>

@@ -1,0 +1,23 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Tema chiaro della finestra: stesse chiavi del tema scuro, grigi chiari e testo quasi nero. -->
+    <SolidColorBrush x:Key="Bg" Color="#F3F4F6"/>
+    <SolidColorBrush x:Key="Panel" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Control" Color="#EEF0F3"/>
+    <SolidColorBrush x:Key="ControlHover" Color="#E2E5EA"/>
+    <SolidColorBrush x:Key="Line" Color="#DDE1E7"/>
+    <SolidColorBrush x:Key="LineStrong" Color="#B8BFCA"/>
+    <SolidColorBrush x:Key="Fg" Color="#14171C"/>
+    <SolidColorBrush x:Key="FgDim" Color="#5B6372"/>
+    <SolidColorBrush x:Key="Danger" Color="#C62828"/>
+    <!-- Velo dei pulsanti: scuro sul tema chiaro, altrimenti il passaggio non si vedrebbe. -->
+    <SolidColorBrush x:Key="Veil" Color="Black"/>
+    <!-- Sul bianco i quadratini chiari sparirebbero: bordo più marcato. -->
+    <SolidColorBrush x:Key="SwatchBorder" Color="#B8BFCA"/>
+    <!-- Avvisi (ambra), esito buono (verde) e i loro veli per i riquadri: più scuri per leggersi sul bianco. -->
+    <SolidColorBrush x:Key="Warn" Color="#B86E00"/>
+    <SolidColorBrush x:Key="WarnSoft" Color="#FFF2DE"/>
+    <SolidColorBrush x:Key="Good" Color="#1E8E3E"/>
+    <SolidColorBrush x:Key="GoodSoft" Color="#E3F5E8"/>
+    <SolidColorBrush x:Key="DangerSoft" Color="#FDE7E7"/>
+</ResourceDictionary>
