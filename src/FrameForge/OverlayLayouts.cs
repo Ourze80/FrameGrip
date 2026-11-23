@@ -256,7 +256,8 @@ public sealed partial class OverlayView
         if (dc != null && _bare && Draws(false))
         {
             double w = TitleLine(null, 0, 0, maxW, out double th);
-            if (w > 0) dc.DrawRoundedRectangle(TitlePlate, null, new Rect(x - 6, y - 1, w + 12, th + 2), 4, 4);
+            // Stesso fondo e bordo dei riquadri sotto, così la riga sembra uno di loro.
+            if (w > 0) dc.DrawRoundedRectangle(TileFill, TileEdge, new Rect(x - 5.5, y - 1.5, w + 11, th + 3), 4, 4);
         }
         TitleLine(dc, x, y, maxW, out double h);
         return h;

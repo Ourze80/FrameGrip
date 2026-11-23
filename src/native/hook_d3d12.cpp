@@ -22,7 +22,9 @@ namespace
     // Tutte le code "dirette" viste lavorare. Un gioco può averne molte (frame generation, ReShade,
     // mod, registratori): sullo schermo si può disegnare SOLO con quella con cui è stato creato lo
     // swapchain. Con un'altra, DirectX 12 toglie la scheda video al gioco (DXGI_ERROR_ACCESS_DENIED).
-    const int kMaxQueues = 16;
+    // Ogni posto tiene un riferimento alla coda (serve per poterla interrogare senza rischi); D3D12Maintain
+    // lo restituisce quando il gioco l'ha buttata o il device è stato rimosso, e il posto torna libero.
+    const int kMaxQueues = 32;
     ID3D12CommandQueue* volatile g_queues[kMaxQueues] = {};
 
     void STDMETHODCALLTYPE HookExecute(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
@@ -41,9 +43,18 @@ namespace
         g_origExecute(queue, count, lists);
     }
 
-    IDXGISwapChain* g_foundFor = nullptr;
-    ID3D12CommandQueue* g_found = nullptr;
-    int g_foundCandidates = -1;
+    // Risultati di FindQueue per swapchain (pochi posti, a giro): con due swapchain che si alternano
+    // nessuno dei due rifà la ricerca a ogni frame. Usati solo sotto ff::g_overlayLock.
+    struct QueueCache { IDXGISwapChain* sc; int candidates; ID3D12CommandQueue* found; };
+    const int kQueueCache = 4;
+    QueueCache g_queueCache[kQueueCache] = {};
+    int g_queueCacheNext = 0;
+    int g_queueLogs = 0;   // righe di diario di FindQueue scritte (con un tetto)
+
+    void ForgetQueueCache()
+    {
+        for (auto& c : g_queueCache) c = {};
+    }
 
     // La coda dello swapchain. DXGI non la rivela, ma la conserva dentro l'oggetto swapchain:
     // si cerca lì dentro il puntatore di una delle code viste lavorare sullo stesso device.
@@ -64,7 +75,8 @@ namespace
                 d->Release();
             }
         }
-        if (sc == g_foundFor && n == g_foundCandidates) return g_found;
+        for (auto& c : g_queueCache)
+            if (c.sc == sc && c.candidates == n) return c.found;
 
         ID3D12CommandQueue* found = nullptr;
         int offset = -1;
@@ -81,9 +93,13 @@ namespace
         }
         if (!found && n == 1) found = cand[0];   // una sola coda possibile: è per forza quella
 
-        g_foundFor = sc;
-        g_foundCandidates = n;
-        g_found = found;
+        QueueCache* slot = nullptr;
+        for (auto& c : g_queueCache)
+            if (c.sc == sc) slot = &c;
+        if (!slot) { slot = &g_queueCache[g_queueCacheNext]; g_queueCacheNext = (g_queueCacheNext + 1) % kQueueCache; }
+        bool changed = slot->sc != sc || slot->found != found;
+        *slot = { sc, n, found };
+        if (!changed || ++g_queueLogs > 16) return found;   // il diario solo se cambia qualcosa, con un tetto
         if (offset >= 0) ff::Log("DirectX 12: coda dello swapchain trovata (posizione +0x%X, %d possibili)", offset, n);
         else if (found) ff::Log("DirectX 12: una sola coda possibile, uso quella");
         else if (n > 0) ff::Log("DirectX 12: coda dello swapchain non riconosciuta tra %d: overlay nel gioco sospeso", n);
@@ -482,6 +498,61 @@ void ff::DrawD3D12(IDXGISwapChain* sc)
     SafeRelease(sc3);
     SafeRelease(queue);
     dev->Release();
+}
+
+void ff::D3D12Maintain()
+{
+    // Fuori dal Present: qui si può aspettare che finisca un disegno in corso. Il Present invece, se trova
+    // il blocco preso, salta l'overlay per quel frame (OverlayTryLock), senza mai aspettare.
+    AcquireSRWLockExclusive(&g_overlayLock);
+
+    // Nessuno, oltre a noi, deve tenere vivo un device rimosso (TDR) o buttato dal gioco: finché esiste,
+    // D3D12CreateDevice restituirebbe al gioco lo stesso device e non potrebbe ripartire.
+    if (g_dev)
+    {
+        bool drop = g_dev->GetDeviceRemovedReason() != S_OK;
+        if (!drop && g_queue)
+        {
+            ULONG ours = 1;   // g_queue, più l'eventuale posto in g_queues
+            for (int i = 0; i < kMaxQueues; i++) if (g_queues[i] == g_queue) ours++;
+            g_queue->AddRef();
+            drop = g_queue->Release() <= ours;   // la coda la teniamo viva solo noi: il gioco l'ha buttata
+        }
+        if (drop)
+        {
+            Log("DirectX 12: device rimosso o abbandonato dal gioco, risorse dell'overlay liberate");
+            ReleaseAll();
+            ForgetQueueCache();
+        }
+    }
+
+    int released = 0;
+    for (int i = 0; i < kMaxQueues; i++)
+    {
+        ID3D12CommandQueue* q = g_queues[i];
+        if (!q || q == g_queue) continue;
+        bool dead = false;
+        ID3D12Device* d = nullptr;
+        if (SUCCEEDED(q->GetDevice(IID_PPV_ARGS(&d))) && d)
+        {
+            dead = d->GetDeviceRemovedReason() != S_OK;
+            d->Release();
+        }
+        if (!dead)
+        {
+            q->AddRef();
+            dead = q->Release() <= 1;   // solo il nostro riferimento
+        }
+        // Chi chiama ExecuteCommandLists ha un riferimento alla coda: HookExecute non può trovarla morta.
+        if (dead && InterlockedCompareExchangePointer((void* volatile*)&g_queues[i], nullptr, q) == q)
+        {
+            q->Release();
+            released++;
+        }
+    }
+    if (released) ForgetQueueCache();
+
+    ReleaseSRWLockExclusive(&g_overlayLock);
 }
 
 // Aggancia ExecuteCommandLists per scoprire la coda di comandi del gioco. Tutte le code condividono

@@ -66,7 +66,7 @@
 
 ## What it does not do
 
-- **It is not made for online games with anti-cheat.** FrameGrip draws its overlay by loading a small module into the game. Anti-cheat systems such as Easy Anti-Cheat, BattlEye, Vanguard and Ricochet may block it or flag it. **In online multiplayer games, use it at your own risk**, or keep it off for those games.
+- **It is not made for online games with anti-cheat.** FrameGrip draws its overlay by loading a small module into the game. Anti-cheat systems such as Easy Anti-Cheat, BattlEye, Vanguard and Ricochet may block it or flag it. From version 1.0.1, FrameGrip recognises most games protected by an anti-cheat and **stays out of them on its own**: no overlay and no limiter there, only the FPS reading, which does not touch the game. No list is ever complete, so **in online multiplayer games, use it at your own risk**, or keep it off for those games.
 - No overlay in Direct3D 10 games (the limiter still works there).
 - It cannot reliably detect G-Sync / FreeSync, or the frame generation multiplier (×2 / ×3 / ×4). You set them once: G-Sync in *Options → Display*, frame generation per game.
 - It does not change your game files, drivers or graphics settings.
@@ -81,7 +81,7 @@
 
 ## Install
 
-1. Download `FrameGrip-Setup-1.0.0.exe` from [Releases](https://github.com/Ourze80/FrameGrip/releases/latest).
+1. Download `FrameGrip-Setup-1.0.1.exe` from [Releases](https://github.com/Ourze80/FrameGrip/releases/latest).
 2. Run it and follow the steps.
 3. Open FrameGrip, choose an overlay style, and start a game: FrameGrip recognises it on its own.
 

@@ -12,11 +12,27 @@
 
 // Solo per le prove: se FF_TEST_HOOK_DLL indica la DLL di FrameGrip, il gioco di prova la carica da sé
 // all'avvio (come farebbe ffinject), così la prova non dipende dall'iniettore.
+// Come ffinject crea il segnale "iniezione" (vedi DllMain): senza, la DLL penserebbe di essere un layer
+// Vulkan e resterebbe ferma.
 inline void LoadTestHook()
 {
     wchar_t path[MAX_PATH];
     DWORD n = GetEnvironmentVariableW(L"FF_TEST_HOOK_DLL", path, MAX_PATH);
-    if (n && n < MAX_PATH) LoadLibraryW(path);
+    if (!n || n >= MAX_PATH) return;
+    wchar_t markerName[64];
+    swprintf_s(markerName, FF_INJECT_MARKER_PREFIX L"%lu", GetCurrentProcessId());
+    HANDLE marker = CreateEventW(nullptr, TRUE, FALSE, markerName);
+    LoadLibraryW(path);
+    if (marker) CloseHandle(marker);
+}
+
+// Finestra fuori dallo schermo: argomento "off" oppure FRAMEGRIP_OFFSCREEN=1 (come l'app).
+inline bool TestOffscreen(const wchar_t* cmd)
+{
+    if (cmd && wcsstr(cmd, L"off")) return true;
+    wchar_t v[8];
+    DWORD n = GetEnvironmentVariableW(L"FRAMEGRIP_OFFSCREEN", v, 8);
+    return n == 1 && v[0] == L'1';
 }
 
 inline void WriteTestDump(const wchar_t* name, const void* rows, uint32_t w, uint32_t h, uint32_t format,

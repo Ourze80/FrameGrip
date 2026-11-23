@@ -64,4 +64,53 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
     [DllImport("kernel32.dll")] public static extern bool IsWow64Process(IntPtr process, out bool wow64);
     [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentThread();
+    [DllImport("kernel32.dll")] private static extern bool GetProcessInformation(IntPtr process, int infoClass, ref uint info, int size);
+    [DllImport("kernel32.dll")] private static extern bool SetProcessInformation(IntPtr process, int infoClass, ref uint info, int size);
+    [DllImport("kernel32.dll")] private static extern bool SetThreadInformation(IntPtr thread, int infoClass, ref uint info, int size);
+    [DllImport("ntdll.dll")] private static extern int NtQueryInformationProcess(IntPtr process, int infoClass, ref uint info, int size, out int returned);
+    [DllImport("ntdll.dll")] private static extern int NtSetInformationProcess(IntPtr process, int infoClass, ref uint info, int size);
+
+    /// <summary>
+    /// Riporta il processo a priorità normale (CPU, memoria, disco). Serve quando l'app parte dall'attività
+    /// pianificata dell'avvio automatico: Windows avvia le attività a priorità "sotto il normale", con memoria
+    /// e disco a priorità bassa. Con la CPU tutta occupata dal gioco (compilazione degli shader, caricamenti)
+    /// il thread dell'overlay restava fermo per secondi: il "battito" non arrivava alla DLL nel gioco, che dopo
+    /// 3 secondi spegne limitatore e overlay credendo l'app chiusa. Da chiamare per prima cosa, prima che
+    /// nascano gli altri thread. Restituisce cosa ha cambiato (per il diario), null se era già tutto normale.
+    /// </summary>
+    public static string? RestoreNormalPriority()
+    {
+        try
+        {
+            const int processMemoryPriority = 0, threadMemoryPriority = 0, processIoPriority = 33;
+            const uint memoryNormal = 5, ioNormal = 2;
+            using var me = System.Diagnostics.Process.GetCurrentProcess();
+            var cls = me.PriorityClass;
+            IntPtr h = GetCurrentProcess();
+            uint mem = memoryNormal, io = ioNormal;
+            bool memKnown = GetProcessInformation(h, processMemoryPriority, ref mem, 4);
+            bool ioKnown = NtQueryInformationProcess(h, processIoPriority, ref io, 4, out _) == 0;
+            bool lowCpu = cls is System.Diagnostics.ProcessPriorityClass.Idle or System.Diagnostics.ProcessPriorityClass.BelowNormal;
+            bool lowMem = memKnown && mem < memoryNormal, lowIo = ioKnown && io < ioNormal;
+            if (!lowCpu && !lowMem && !lowIo) return null;
+
+            if (lowCpu) me.PriorityClass = System.Diagnostics.ProcessPriorityClass.Normal;
+            uint value = memoryNormal;
+            if (lowMem)
+            {
+                SetProcessInformation(h, processMemoryPriority, ref value, 4);
+                SetThreadInformation(GetCurrentThread(), threadMemoryPriority, ref value, 4);   // questo thread è nato prima
+            }
+            value = ioNormal;
+            if (lowIo) NtSetInformationProcess(h, processIoPriority, ref value, 4);
+            return $"was {cls}, memory {(memKnown ? mem.ToString() : "?")}, I/O {(ioKnown ? io.ToString() : "?")}: set to normal";
+        }
+        catch (Exception ex)
+        {
+            return "not changed: " + ex.Message;
+        }
+    }
 }

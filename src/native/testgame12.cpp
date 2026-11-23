@@ -1,5 +1,5 @@
 // ff_testgame12: finto gioco DirectX 12 per provare l'overlay nei giochi moderni.
-// Uso: ff_testgame12 [secondi] [activate] [fg] [off] [resize] [hdr16 | hdr10] [dump]
+// Uso: ff_testgame12 [secondi] [activate] [fg [pipe] [hitch]] [off] [resize] [hdr16 | hdr10] [dump]
 //   hdr16: swapchain scRGB (16 bit float);  hdr10: swapchain HDR10 (10 bit, PQ, BT.2020)
 //   dump: fondo nero e, verso la fine, il fotogramma presentato in %TEMP%\ff_dump_d3d12.bin (vedi testdump.h)
 #define WIN32_LEAN_AND_MEAN
@@ -21,7 +21,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
 {
     double seconds = (cmd && *cmd) ? _wtof(cmd) : 30.0;
     const UINT kFrames = 2;
-    LoadTestHook();
+    // "unhook": la DLL si carica dopo, quando il gioco ha gia' messo da parte i puntatori della tabella (vedi sotto).
+    bool unhookTest = cmd && wcsstr(cmd, L"unhook");
+    if (!unhookTest) LoadTestHook();
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = WndProc;
@@ -31,15 +33,30 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
     RegisterClassExW(&wc);
     // "off": finestra fuori dallo schermo, visibile ma senza fuoco (le prove non disturbano chi usa il PC
     // e il gioco non viene frenato come quando è ridotto a icona).
-    bool offscreen = cmd && wcsstr(cmd, L"off");
+    bool offscreen = TestOffscreen(cmd);
     // "resize": a 6 e 9 secondi cambia la misura della finestra e dei buffer dello swapchain.
     bool resizeTest = cmd && wcsstr(cmd, L"resize");
     HWND hwnd = CreateWindowExW(offscreen ? WS_EX_TOOLWINDOW : 0, wc.lpszClassName, L"FrameGrip Test Game (DirectX 12)", WS_OVERLAPPEDWINDOW,
         offscreen ? -3000 : 240, offscreen ? 100 : 240, offscreen ? 700 : 640, offscreen ? 800 : 360, nullptr, nullptr, inst, nullptr);
     bool activate = cmd && wcsstr(cmd, L"activate");
     bool fgMode = cmd && wcsstr(cmd, L"fg");
-    double pairSum = 0, gapSum = 0;
-    int pairs = 0;
+    // "hitch": a 10 secondi una pausa sola di 300 ms (uno scatto del gioco: caricamento, shader).
+    // "pipe": gioco "a catena" come i motori veri: il lavoro per la coppia dopo va avanti mentre il Present
+    // è fermo nel limitatore, quindi tra una coppia e l'altra restano solo 2 ms.
+    bool hitchTest = cmd && wcsstr(cmd, L"hitch"), pipeMode = cmd && wcsstr(cmd, L"pipe"), hitchDone = false;
+    // "stutter": da 8 a 16 secondi il gioco "compila gli shader": coppie lente (30-60 ms) e ogni tanto uno
+    // scatto (120-300 ms); poi torna veloce. Serve a vedere che dopo il limite tenga ancora.
+    bool stutterTest = cmd && wcsstr(cmd, L"stutter");
+    unsigned stutterRnd = 12345;
+    // "shader=P,A,B": da 8 secondi in poi il gioco "compila gli shader" senza sosta: P fotogrammi su 100
+    // costano da A a B ms in piu' (scatti continui e a caso, come nei minuti di compilazione di un gioco vero).
+    // "work=N": lavoro di base del gioco per ogni fotogramma, in decimi di millisecondo (attesa precisa).
+    int shP = 0, shA = 0, shB = 0, workTenths = 0;
+    if (cmd) { if (const wchar_t* a = wcsstr(cmd, L"shader=")) swscanf_s(a + 7, L"%d,%d,%d", &shP, &shA, &shB); }
+    if (cmd) { if (const wchar_t* a = wcsstr(cmd, L"work=")) swscanf_s(a + 5, L"%d", &workTenths); }
+    if (shB < shA) shB = shA;
+    double pairSum = 0, gapSum = 0, pairSum2 = 0, gapSum2 = 0;   // "2" = dopo lo scatto
+    int pairs = 0, pairs2 = 0;
     long long lastPair = 0;
     ShowWindow(hwnd, activate ? SW_SHOWNORMAL : SW_SHOWNOACTIVATE);
     if (activate) SetForegroundWindow(hwnd);
@@ -65,6 +82,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
     if (FAILED(factory->CreateSwapChainForHwnd(queue, hwnd, &sd, nullptr, nullptr, &sc1))) return 2;
     IDXGISwapChain3* sc = nullptr;
     sc1->QueryInterface(IID_PPV_ARGS(&sc));
+    // "unhook": fa la parte di un altro programma (ReShade, un overlay, una mod) che si era agganciato alla
+    // tabella dello swapchain prima di FrameGrip e che, staccandosi a partita in corso, ci rimette i puntatori
+    // che aveva trovato: a 10 secondi l'aggancio di FrameGrip sparisce dalla tabella. FrameGrip deve
+    // accorgersene e rimettersi, altrimenti limitatore e misura si fermano senza che nessuno lo sappia.
+    void* savedPresent = nullptr, * savedPresent1 = nullptr;
+    bool unhookDone = false;
+    if (unhookTest)
+    {
+        void** vt = *(void***)sc;
+        savedPresent = vt[8];      // IDXGISwapChain::Present
+        savedPresent1 = vt[22];    // IDXGISwapChain1::Present1
+        LoadTestHook();
+    }
     if (hdr16 || hdr10)
     {
         // Come fa un gioco HDR (o ReShade/RenoDX): lo spazio colore si dichiara dopo la creazione.
@@ -120,6 +150,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
         }
         double t = (GetTickCount64() - start) / 1000.0;
         if (t > seconds) break;
+        if (unhookTest && !unhookDone && t > 10.0)
+        {
+            unhookDone = true;
+            void** vt = *(void***)sc;
+            DWORD old;
+            if (VirtualProtect(&vt[8], sizeof(void*) * 15, PAGE_READWRITE, &old))
+            {
+                vt[8] = savedPresent;
+                vt[22] = savedPresent1;
+                VirtualProtect(&vt[8], sizeof(void*) * 15, old, &old);
+            }
+        }
         if (t > 8.0)
         {
             if (countFrames == 0) QueryPerformanceCounter(&countStart);
@@ -193,14 +235,59 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
             // poi il "lavoro" del gioco per la coppia successiva.
             sc->Present(0, 0);
             QueryPerformanceCounter(&q1);
-            if (t > 6.0 && lastPair != 0)   // i primi secondi servono a FrameGrip per agganciarsi e riconoscere il ritmo
+            if (t > 6.0 && t < 10.0 && lastPair != 0)   // i primi secondi servono a FrameGrip per agganciarsi e riconoscere il ritmo
             {
                 pairSum += (double)(q0.QuadPart - lastPair) * 1000.0 / qf.QuadPart;
                 gapSum += (double)(q1.QuadPart - qm.QuadPart) * 1000.0 / qf.QuadPart;
                 pairs++;
             }
+            else if (t > 12.0 && lastPair != 0)
+            {
+                pairSum2 += (double)(q0.QuadPart - lastPair) * 1000.0 / qf.QuadPart;
+                gapSum2 += (double)(q1.QuadPart - qm.QuadPart) * 1000.0 / qf.QuadPart;
+                pairs2++;
+            }
             lastPair = q0.QuadPart;
-            Sleep(12);
+            if (pipeMode)
+            {
+                // La coppia dopo è pronta 12 ms dopo l'inizio di questa, ma non prima di 2 ms da adesso.
+                long long ready = q0.QuadPart + qf.QuadPart * 12 / 1000, soon = q1.QuadPart + qf.QuadPart * 2 / 1000;
+                if (ready < soon) ready = soon;
+                LARGE_INTEGER qn;
+                for (;;)
+                {
+                    QueryPerformanceCounter(&qn);
+                    if (qn.QuadPart >= ready) break;
+                    if (ready - qn.QuadPart > qf.QuadPart * 2 / 1000) Sleep(1); else YieldProcessor();
+                }
+            }
+            else Sleep(12);
+            if (hitchTest && !hitchDone && t > 10.0) { hitchDone = true; Sleep(300); }
+            if (stutterTest && t > 8.0 && t < 16.0)
+            {
+                stutterRnd = stutterRnd * 1664525u + 1013904223u;
+                unsigned r = (stutterRnd >> 16) & 0xFF;
+                Sleep(r < 20 ? 120 + r * 9 : 30 + r % 30);
+            }
+        }
+        if (workTenths > 0 || (shP > 0 && t > 8.0))
+        {
+            double extraMs = workTenths / 10.0;
+            if (shP > 0 && t > 8.0)
+            {
+                stutterRnd = stutterRnd * 1664525u + 1013904223u;
+                unsigned r = (stutterRnd >> 16) & 0x7FFF;
+                if ((int)(r % 100) < shP) extraMs += shA + (double)((r / 100) % (unsigned)(shB - shA + 1));
+            }
+            LARGE_INTEGER qa, qb;
+            QueryPerformanceCounter(&qa);
+            long long until = qa.QuadPart + (long long)(extraMs * qf.QuadPart / 1000.0);
+            for (;;)
+            {
+                QueryPerformanceCounter(&qb);
+                if (qb.QuadPart >= until) break;
+                if (until - qb.QuadPart > qf.QuadPart * 2 / 1000) Sleep(1); else YieldProcessor();
+            }
         }
 
         // Attende la scheda video prima di riusare l'allocatore (semplice, come nei tutorial).
@@ -284,6 +371,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
         if (_wfopen_s(&f, path, L"w") == 0 && f)
         {
             fprintf(f, "pairs %d  period %.2f ms  second-present gap %.2f ms\n", pairs, pairSum / pairs, gapSum / pairs);
+            if (pairs2 > 0)
+                fprintf(f, "after  pairs %d  period %.2f ms  second-present gap %.2f ms\n", pairs2, pairSum2 / pairs2, gapSum2 / pairs2);
             fclose(f);
         }
     }

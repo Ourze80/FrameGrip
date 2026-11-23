@@ -44,7 +44,7 @@ public static class DisplayInfo
     [DllImport("user32.dll")] private static extern int DisplayConfigGetDeviceInfo(ref SourceName req);
     [DllImport("user32.dll")] private static extern int DisplayConfigGetDeviceInfo(ref TargetName req);
 
-    // strutture di QueryDisplayConfig: servono solo per il nome vero dello schermo (quello che ha scritto il produttore)
+    // strutture di QueryDisplayConfig: servono per il nome vero dello schermo (quello che ha scritto il produttore) e per la frequenza esatta
     [StructLayout(LayoutKind.Sequential)] private struct Luid { public uint Low; public int High; }
     [StructLayout(LayoutKind.Sequential)] private struct PathSource { public Luid Adapter; public uint Id, ModeIdx, Flags; }
     [StructLayout(LayoutKind.Sequential)]
@@ -124,6 +124,51 @@ public static class DisplayInfo
             return EnumDisplaySettings(mi.Device, ENUM_CURRENT_SETTINGS, ref dm) && dm.DisplayFrequency > 1 ? dm.DisplayFrequency : 0;
         }
         catch { return 0; }
+    }
+
+    /// <summary>
+    /// Frequenza esatta dello schermo della finestra (per esempio 59,94 o 143,98 Hz), dal rapporto che usa Windows
+    /// (QueryDisplayConfig); se non si legge, quella intera di RefreshHz. 0 se non si riesce a leggere niente.
+    /// I valori a un centesimo da un intero (60000/1000.2...) diventano l'intero.
+    /// </summary>
+    public static double RefreshRate(IntPtr hwnd)
+    {
+        try
+        {
+            var mon = MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */);
+            var mi = new MonitorInfoEx { Size = Marshal.SizeOf<MonitorInfoEx>() };
+            if (!GetMonitorInfo(mon, ref mi)) return 0;
+            double exact = ExactRefresh(mi.Device);
+            if (exact > 1) return exact;
+            var dm = new DevMode { Size = (short)Marshal.SizeOf<DevMode>() };
+            return EnumDisplaySettings(mi.Device, ENUM_CURRENT_SETTINGS, ref dm) && dm.DisplayFrequency > 1 ? dm.DisplayFrequency : 0;
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>Frequenza del percorso attivo che parte da questo \\.\DISPLAYn (numeratore/denominatore), 0 se non c'è.</summary>
+    private static double ExactRefresh(string gdi)
+    {
+        const uint QDC_ONLY_ACTIVE_PATHS = 2;
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, out uint np, out uint nm) != 0) return 0;
+        var paths = new PathInfo[np]; var modes = new ModeInfo[nm];
+        if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ref np, paths, ref nm, modes, IntPtr.Zero) != 0) return 0;
+        for (int i = 0; i < np; i++)
+        {
+            var src = new SourceName { Header = new InfoHeader { Type = 1, Size = (uint)Marshal.SizeOf<SourceName>(), Adapter = paths[i].Source.Adapter, Id = paths[i].Source.Id } };
+            if (DisplayConfigGetDeviceInfo(ref src) != 0 || !string.Equals(src.Gdi, gdi, StringComparison.OrdinalIgnoreCase)) continue;
+            return Normalize(paths[i].Target.RefreshNum, paths[i].Target.RefreshDen);
+        }
+        return 0;
+    }
+
+    /// <summary>Numeratore/denominatore in Hz; a un centesimo da un intero si arrotonda (niente 143,9999).</summary>
+    public static double Normalize(uint num, uint den)
+    {
+        if (num == 0 || den == 0) return 0;
+        double hz = (double)num / den;
+        double round = Math.Round(hz);
+        return Math.Abs(hz - round) < 0.01 ? round : hz;
     }
 
     /// <summary>

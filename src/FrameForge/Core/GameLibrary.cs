@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -36,6 +37,14 @@ public static class GameLibrary
         "epicgameslauncher", "epicwebhelper", "xboxpcapp", "gamebar", "gamebarftserver", "xboxappservices", "gamingservices",
         "unitycrashhandler64", "unitycrashhandler32", "crashreportclient", "crashpad_handler", "easyanticheat", "easyanticheat_setup",
         "easyanticheat_eos_setup", "beservice", "battleye", "vc_redist.x64", "vc_redist.x86", "dxsetup", "dotnetfx", "uninstall", "unins000",
+        // altri negozi e client: Riot, EA, Rockstar, Battle.net, Ubisoft, Overwolf, Amazon, itch, Playnite
+        "riotclientservices", "riotclientux", "riotclientuxrender", "riotclientcrashhandler", "vgtray",
+        "eadesktop", "eabackgroundservice", "eaconnect_microsoft", "origin", "originwebhelperservice", "originclientservice",
+        "launcher", "launcherpatcher", "rockstarservice", "rockstarerrorhandler", "socialclubhelper", "playgtav",
+        "battle.net", "battle.net helper", "battle.net launcher", "agent", "blizzard error",
+        "upc", "ubisoftconnect", "uplaywebcore", "ubisoftgamelauncher", "ubisoftgamelauncher64", "uplay", "uplayservice",
+        "overwolf", "overwolfbrowser", "overwolfhelper", "overwolfhelper64", "overwolflauncher",
+        "amazon games ui", "amazon games services", "itch", "playnite.desktopapp", "playnite.fullscreenapp",
     };
 
     private static readonly string[] JunkExeParts = { "crash", "setup", "unins", "redist", "anticheat", "launcherpatcher", "report", "helper", "dxwebsetup", "vcredist", "install" };
@@ -90,18 +99,43 @@ public static class GameLibrary
     private static string Norm(string folder) => Path.GetFullPath(folder).TrimEnd('\\') + "\\";
 
     /// <summary>Il gioco che contiene questo eseguibile (cartella più specifica), oppure null.</summary>
+    /// <remarks>
+    /// Si chiama ogni secondo mentre si gioca: il risultato resta in memoria per percorso, e si ricalcola
+    /// solo dopo una nuova scansione (che sostituisce l'elenco dei giochi e con esso la memoria).
+    /// </remarks>
     public static LibraryGame? Find(string? exePath)
     {
         if (string.IsNullOrEmpty(exePath)) return null;
+        var games = _games;
+        var cache = _findCache;
+        if (cache.Games != games)
+        {
+            // elenco nuovo (scansione appena finita): cartelle normalizzate una volta sola e memoria vuota
+            cache = new FindCache(games, games.Select(g => Norm(g.Folder)).ToArray());
+            _findCache = cache;
+        }
+        if (cache.Results.TryGetValue(exePath, out var known)) return known;
+
         LibraryGame? best = null;
         int bestLen = 0;
-        foreach (var g in _games)
+        for (int i = 0; i < games.Count; i++)
         {
-            string f = Norm(g.Folder);
-            if (f.Length > bestLen && exePath.StartsWith(f, StringComparison.OrdinalIgnoreCase)) { best = g; bestLen = f.Length; }
+            string f = cache.Folders[i];
+            if (f.Length > bestLen && exePath.StartsWith(f, StringComparison.OrdinalIgnoreCase)) { best = games[i]; bestLen = f.Length; }
         }
-        return best ?? FindXboxConfig(exePath);
+        best ??= FindXboxConfig(exePath);
+        if (cache.Results.Count > 512) cache.Results.Clear();
+        cache.Results[exePath] = best;
+        return best;
     }
+
+    private sealed class FindCache(List<LibraryGame> games, string[] folders)
+    {
+        public readonly List<LibraryGame> Games = games;
+        public readonly string[] Folders = folders;
+        public readonly ConcurrentDictionary<string, LibraryGame?> Results = new(StringComparer.OrdinalIgnoreCase);
+    }
+    private static volatile FindCache _findCache = new(new List<LibraryGame>(), Array.Empty<string>());
 
     /// <summary>Giochi del Microsoft Store installati in WindowsApps (cartella non leggibile per intero): MicrosoftGame.config accanto all'eseguibile.</summary>
     private static LibraryGame? FindXboxConfig(string exePath)

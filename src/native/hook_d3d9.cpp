@@ -61,6 +61,8 @@ namespace
 
     void Draw(IDirect3DDevice9* dev, IDirect3DSurface9* back)
     {
+        ff::OverlayTryLock overlayLock;   // un solo thread alla volta; se occupato si salta (mai attese)
+        if (!overlayLock.locked) return;
         ff::Overlay ov;
         if (!dev || !back || !ff::GetOverlay(ov)) return;
         if (dev->TestCooperativeLevel() != D3D_OK) return;   // device perso (es. alt-tab a schermo intero)
@@ -167,9 +169,11 @@ namespace
             ff::MarkDrawn();
         }
 
-        g_state->Apply();
-        dev->SetRenderTarget(0, oldTarget);
+        // Prima i bersagli, poi lo state block: SetRenderTarget rimette il viewport a tutta la superficie,
+        // e Apply deve poter ripristinare il viewport del gioco.
+        if (oldTarget) dev->SetRenderTarget(0, oldTarget);
         dev->SetDepthStencilSurface(oldDepth);
+        g_state->Apply();
         if (oldTarget) oldTarget->Release();
         if (oldDepth) oldDepth->Release();
     }

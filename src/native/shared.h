@@ -7,6 +7,9 @@
 #include <cstddef>
 
 #define FF_SHARED_PREFIX L"Local\\FrameGripHook_"   // seguito dal PID in decimale
+// Segnale creato da ffinject prima di caricare la DLL nel gioco (seguito dal PID): così la DLL sa di
+// essere stata iniettata e non caricata come layer Vulkan. Solo nativo: nessun effetto sul layout.
+#define FF_INJECT_MARKER_PREFIX L"Local\\FrameGripInject"
 // 3: righe cambiate (ovFullSeq, ovDirtyY, ovDirtyRows) e immagine spostata a 16480.
 // L'app sa usare anche la 2 (solo immagini intere); un'app che conosce solo la 2 rifiuta la 3.
 // Le aggiunte compatibili non cambiano la versione: la DLL le annuncia in dllCaps e l'app le usa

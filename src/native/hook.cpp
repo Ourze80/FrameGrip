@@ -13,9 +13,14 @@ namespace ff
 {
     FFShared* g_shared = nullptr;
 
+    SRWLOCK g_overlayLock = SRWLOCK_INIT;
+
     namespace
     {
-        HANDLE g_timer = nullptr;
+        // Timer dell'attesa: uno per thread (due thread che presentano non si rovinano l'attesa a vicenda).
+        // Creato alla prima attesa del thread; ad alta risoluzione se il sistema lo offre.
+        thread_local HANDLE t_timer = nullptr;
+        thread_local bool t_timerHigh = false, t_timerTried = false;
         int64_t g_freq = 1;
         double g_next = 0;      // istante previsto del prossimo Present, in tick QPC
 
@@ -50,19 +55,29 @@ namespace ff
             return GetTickCount64() - s->heartbeatMs < 3000;
         }
 
-        // Attesa precisa: timer ad alta risoluzione fino a ~1 ms dal traguardo, poi attesa attiva.
+        // Attesa precisa: timer fino a poco prima del traguardo (~0,5 ms con il timer ad alta risoluzione,
+        // ~1 ms con quello normale, meno preciso), poi attesa attiva.
         void WaitUntil(double target)
         {
+            if (!t_timerTried)
+            {
+                t_timerTried = true;
+                // Timer ad alta risoluzione (Windows 10 1803+); se manca si ripiega su quello normale.
+                t_timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /*HIGH_RESOLUTION*/, TIMER_ALL_ACCESS);
+                t_timerHigh = t_timer != nullptr;
+                if (!t_timer) t_timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+            }
+            const double margin = t_timerHigh ? 0.5 : 1.0;
             for (;;)
             {
                 double remainingMs = (target - (double)Qpc()) * 1000.0 / (double)g_freq;
                 if (remainingMs <= 0) return;
-                if (remainingMs > 1.5 && g_timer)
+                if (remainingMs > margin + 0.5 && t_timer)
                 {
                     LARGE_INTEGER due;
-                    due.QuadPart = -(LONGLONG)((remainingMs - 1.0) * 10000.0); // unità da 100 ns, relativo
-                    if (SetWaitableTimerEx(g_timer, &due, 0, nullptr, nullptr, nullptr, 0))
-                        WaitForSingleObject(g_timer, 100);
+                    due.QuadPart = -(LONGLONG)((remainingMs - margin) * 10000.0); // unità da 100 ns, relativo
+                    if (SetWaitableTimerEx(t_timer, &due, 0, nullptr, nullptr, nullptr, 0))
+                        WaitForSingleObject(t_timer, 100);
                     else
                         Sleep(1);
                 }
@@ -92,18 +107,33 @@ namespace ff
             return true;
         }
 
-        DWORD WINAPI InitThread(LPVOID param)
+        // Preparazione comune (una volta sola, anche se la chiedono insieme il thread dell'iniezione e il
+        // layer Vulkan): frequenza del contatore e memoria condivisa.
+        INIT_ONCE g_coreOnce = INIT_ONCE_STATIC_INIT;
+        bool g_coreOk = false;
+
+        BOOL CALLBACK InitCoreOnce(PINIT_ONCE, PVOID, PVOID*)
         {
-            HMODULE self = (HMODULE)param;
             LARGE_INTEGER f;
             QueryPerformanceFrequency(&f);
             g_freq = f.QuadPart;
+            g_coreOk = CreateShared();
+            return TRUE;
+        }
 
-            // Timer ad alta risoluzione (Windows 10 1803+); se manca si ripiega su quello normale.
-            g_timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /*HIGH_RESOLUTION*/, TIMER_ALL_ACCESS);
-            if (!g_timer) g_timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+        // Tiene la DLL caricata fino alla fine del processo: con agganci e thread attivi non deve
+        // mai essere scaricata (né da FreeLibrary del loader Vulkan né da altri).
+        void PinSelf()
+        {
+            HMODULE pinned = nullptr;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                               (LPCWSTR)&PinSelf, &pinned);
+        }
 
-            if (!CreateShared()) { Log("memoria condivisa non creata: mi fermo"); return 0; }
+        DWORD WINAPI InitThread(LPVOID param)
+        {
+            HMODULE self = (HMODULE)param;
+            if (!InitCore()) { Log("memoria condivisa non creata: mi fermo"); return 0; }
             Log("DLL caricata nel processo");
 
             // Il gioco può caricare la sua API grafica anche dopo l'iniezione:
@@ -142,9 +172,27 @@ namespace ff
                 }
                 Sleep(1000);
                 CheckInlineHooks();
+                if (d3d12) D3D12Maintain();
+                if (dxgi) DxgiMaintain();
             }
             return 0;
         }
+    }
+
+    bool InitCore()
+    {
+        InitOnceExecuteOnce(&g_coreOnce, InitCoreOnce, nullptr, nullptr);
+        return g_coreOk;
+    }
+
+    bool StartLayerMode()
+    {
+        PinSelf();   // da qui in poi esistono stato e agganci: la DLL non deve più essere scaricata
+        bool ok = InitCore();
+        static volatile LONG logged = 0;
+        if (InterlockedExchange(&logged, 1) == 0)
+            Log(ok ? "DLL caricata come layer Vulkan" : "layer Vulkan: memoria condivisa non creata");
+        return ok;
     }
 
     // Un gioco può passare da due API insieme (es. Vulkan o OpenGL presentati dal driver tramite DXGI:
@@ -152,6 +200,23 @@ namespace ff
     // le altre vengono ignorate finché quella resta attiva.
     static uint32_t g_frameOwner = 0;
     static int64_t g_frameOwnerLast = 0;
+
+    volatile LONG g_diagNotPrimary = 0, g_diagRetry = 0;
+
+    static const char* ApiName(uint32_t api)
+    {
+        switch (api)
+        {
+        case FF_API_DXGI: return "DXGI";
+        case FF_API_D3D12: return "DirectX 12";
+        case FF_API_D3D9: return "DirectX 9";
+        case FF_API_OPENGL: return "OpenGL";
+        case FF_API_VULKAN: return "Vulkan";
+        case FF_API_D3D11: return "DirectX 11";
+        case FF_API_D3D10: return "DirectX 10";
+        default: return "nessuna";
+        }
+    }
 
     bool OwnsFrames(uint32_t api)
     {
@@ -164,7 +229,31 @@ namespace ff
         if (!s) return;
 
         int64_t nowQpc = Qpc();
-        if (g_frameOwner != api && g_frameOwner != 0 && nowQpc - g_frameOwnerLast < g_freq / 2) return;
+        // Diario (sempre con un tetto, mai una riga per frame): chi guida i fotogrammi, quali API vengono
+        // ignorate, lo stato del limitatore e, una volta al minuto, un controllo dei conti.
+        static int ownerLogs = 0;
+        static uint32_t ignoredLogged = 0, dIgnored = 0;
+        if (g_frameOwner != api && g_frameOwner != 0 && nowQpc - g_frameOwnerLast < g_freq / 2)
+        {
+            dIgnored++;
+            if (!(ignoredLogged & (1u << (api & 31))) && ownerLogs < 24)
+            {
+                ignoredLogged |= 1u << (api & 31);
+                ownerLogs++;
+                Log("Fotogrammi: %s presenta ma viene ignorata (guida %s)", ApiName(api), ApiName(g_frameOwner));
+            }
+            return;
+        }
+        if (g_frameOwner != api && g_frameOwner != 0)
+        {
+            ignoredLogged = 0;
+            if (ownerLogs < 24)
+            {
+                ownerLogs++;
+                Log("Fotogrammi: ora li guida %s (prima %s, ferma da %lld ms)", ApiName(api), ApiName(g_frameOwner),
+                    (long long)((nowQpc - g_frameOwnerLast) * 1000 / g_freq));
+            }
+        }
         g_frameOwner = api;
         g_frameOwnerLast = nowQpc;
 
@@ -173,36 +262,163 @@ namespace ff
         // il secondo arriva una frazione di millisecondo dopo che il primo è stato consegnato, poi è
         // la scheda video a distribuirli sullo schermo. Lo si riconosce dal tempo tra la fine di una
         // consegna e l'inizio della successiva (che le nostre attese non alterano).
+        //
+        // La vera frame generation ha un ritmo regolare (x2: L C L C..., x3: L C C L C C...): due intervalli
+        // lunghi di fila (L L) quasi non capitano, e ogni gruppo di corti è lungo "raffica - 1". Un gioco
+        // leggero il cui Present si blocca a caso (limitatore del driver, vsync) produce invece corti sparsi
+        // e molte coppie L L: lì la modalità raffica NON va accesa (frenerebbe i frame a coppie: scatti).
+        // Per accenderla servono 16 frame di fila con il ritmo giusto; si spegne subito se le coppie L L
+        // diventano tante, oppure dopo 32 frame di fila senza il ritmo giusto. Tutto O(1), niente allocazioni.
         static int64_t lastExit = 0;
         static double longEma = 0;
-        static bool ring[64] = {};
-        static int ringPos = 0, ringCount = 0, shortCount = 0;
-        bool isShort = false, fgMode = false;
-        int burst = 1;
+        static bool ring[64] = {};       // intervallo corto?
+        static bool llRing[64] = {};     // intervallo lungo subito dopo un altro lungo?
+        static int ringPos = 0, ringCount = 0, shortCount = 0, llCount = 0;
+        static bool prevShort = true;    // il primo lungo non fa coppia
+        static uint8_t runRing[16] = {}; // lunghezze degli ultimi gruppi di corti (4 = 4 o più)
+        static int runPos = 0, runFill = 0, runOfLen[5] = {}, curRun = 0;
+        static bool fgOn = false;
+        static int fgBurst = 2, enterStreak = 0, failStreak = 0;
+        // "Lungo" e "corto" si decidono rispetto all'intervallo lungo solito (longEma), che si aggiorna solo
+        // con gli intervalli lunghi. Senza due protezioni basta UNO scatto del gioco (caricamento, shader:
+        // 100-900 ms) per gonfiarlo, far sembrare corti tutti gli intervalli dopo e, non arrivando più
+        // intervalli lunghi a correggerlo, restare sbagliato per sempre: la frame generation non veniva più
+        // riconosciuta fino al riavvio del gioco.
+        //  1) uno scatto isolato (oltre 4 volte il solito) si mette da parte; solo al terzo di fila è un
+        //     rallentamento vero e diventa il nuovo riferimento;
+        //  2) più di 5 corti di fila non esistono (x6 ne ha 5): vuol dire che il riferimento è troppo alto,
+        //     e lo si riporta al più lungo di quel gruppo.
+        static int outliers = 0, fgLogs = 0;
+        static double runMax = 0;
+        bool isShort = false;
         if (lastExit != 0)
         {
             double gap = (double)(nowQpc - lastExit);
-            if (gap < (double)g_freq)   // le pause lunghe (caricamenti) non contano
+            if (gap < (double)g_freq && longEma > 0 && gap > 4.0 * longEma && outliers < 2)
+            {
+                outliers++;
+                prevShort = true;   // come dopo una pausa: niente coppia L L, gruppo di corti da capo
+                curRun = 0;
+                runMax = 0;
+            }
+            else if (gap < (double)g_freq)   // le pause lunghe (caricamenti) non contano
             {
                 isShort = longEma > 0 && gap < 0.35 * longEma;
-                if (!isShort) longEma = gap > longEma ? (longEma + gap) / 2 : longEma * 0.9 + gap * 0.1;
-                if (ringCount == 64 && ring[ringPos]) shortCount--;
+                if (!isShort)
+                {
+                    longEma = outliers >= 2 ? gap : gap > longEma ? (longEma + gap) / 2 : longEma * 0.9 + gap * 0.1;
+                    outliers = 0;
+                    runMax = 0;
+                }
+                else
+                {
+                    if (gap > runMax) runMax = gap;
+                    if (curRun >= 5)
+                    {
+                        // Tetto a parte e basso: in un gioco senza frame generation capita di continuo e
+                        // toglierebbe il posto alle righe "riconosciuta" / "persa".
+                        static int snapLogs = 0;
+                        if (snapLogs < 4) { snapLogs++; Log("Limitatore: ritmo riallineato (intervallo lungo %.2f -> %.2f ms)", longEma * 1000.0 / g_freq, runMax * 1000.0 / g_freq); }
+                        longEma = runMax;
+                        runMax = 0;
+                        curRun = -1;   // il gruppo riparte da zero (qui sotto sale di uno)
+                    }
+                }
+                bool ll = !isShort && !prevShort;
+                if (ringCount == 64)
+                {
+                    if (ring[ringPos]) shortCount--;
+                    if (llRing[ringPos]) llCount--;
+                }
                 ring[ringPos] = isShort;
+                llRing[ringPos] = ll;
                 if (isShort) shortCount++;
+                if (ll) llCount++;
                 ringPos = (ringPos + 1) % 64;
                 if (ringCount < 64) ringCount++;
+
+                if (isShort) curRun++;
+                else if (curRun > 0)
+                {
+                    // Fine di un gruppo di corti: se ne ricorda la lunghezza.
+                    uint8_t len = (uint8_t)(curRun < 4 ? curRun : 4);
+                    if (runFill == 16) runOfLen[runRing[runPos]]--;
+                    runRing[runPos] = len;
+                    runOfLen[len]++;
+                    runPos = (runPos + 1) % 16;
+                    if (runFill < 16) runFill++;
+                    curRun = 0;
+                }
+                prevShort = isShort;
             }
+            else
+            {
+                prevShort = true;   // dopo una pausa si riparte senza coppia L L
+                curRun = 0;
+                runMax = 0;
+            }
+
+            bool rhythm = false;
+            int candidate = 2;
             if (ringCount >= 32)
             {
                 double share = (double)shortCount / ringCount;   // x2 = 0,5  x3 = 0,67  x4 = 0,75
-                fgMode = share >= 0.3 && share <= 0.85;
-                if (fgMode) burst = share < 0.58 ? 2 : share < 0.71 ? 3 : 4;
+                candidate = share < 0.58 ? 2 : share < 0.71 ? 3 : 4;
+                int wanted = candidate - 1;                      // lunghezza attesa dei gruppi di corti
+                rhythm = share >= 0.3 && share <= 0.85 && llCount <= 3 &&
+                         runFill >= 8 && runOfLen[wanted] * 4 >= runFill * 3;
+            }
+            if (!fgOn)
+            {
+                enterStreak = rhythm ? enterStreak + 1 : 0;
+                if (enterStreak >= 16)
+                {
+                    fgOn = true; fgBurst = candidate; failStreak = 0;
+                    if (fgLogs < 24) { fgLogs++; Log("Limitatore: frame generation x%d riconosciuta", candidate); }
+                }
+            }
+            else if (rhythm)
+            {
+                failStreak = 0;
+                fgBurst = candidate;
+            }
+            else if (llCount > 8 || ++failStreak >= 32)
+            {
+                fgOn = false;
+                enterStreak = 0;
+                if (fgLogs < 24)
+                {
+                    fgLogs++;
+                    Log("Limitatore: frame generation persa (corti %d su %d, coppie lunghe %d, intervallo lungo %.2f ms)",
+                        shortCount, ringCount, llCount, longEma * 1000.0 / g_freq);
+                }
             }
         }
+        bool fgMode = fgOn;
+        int burst = fgOn ? fgBurst : 1;
 
         // --- limitatore ---
         double fps = 0;
         if (s->limiterEnabled && AppAlive(s)) fps = s->targetFps;
+
+        // Diario: ogni cambio di stato del limitatore (acceso con quale limite, spento dall'app, app muta).
+        static int limState = 0, limLogs = 0;
+        static double limFps = 0;
+        static uint32_t dFrames = 0, dWaited = 0, dLate = 0, dPassed = 0;
+        {
+            int state = fps >= 1.0 ? 1 : !s->limiterEnabled ? 2 : !AppAlive(s) ? 3 : 4;
+            if ((state != limState || (state == 1 && fps != limFps)) && limLogs < 40)
+            {
+                limLogs++;
+                if (state == 1) Log("Limitatore: attivo a %.0f fps", fps);
+                else if (state == 2) Log("Limitatore: spento dall'app");
+                else if (state == 3) Log("Limitatore: sospeso, l'app non si fa sentire da %llu ms", (unsigned long long)(GetTickCount64() - s->heartbeatMs));
+                else Log("Limitatore: limite non valido (%.2f)", s->targetFps);
+            }
+            limState = state;
+            limFps = fps;
+        }
+        dFrames++;
 
         if (fps >= 1.0)
         {
@@ -213,11 +429,23 @@ namespace ff
             {
                 double interval = (double)g_freq / fps * burst;
                 double now = (double)Qpc();
-                if (g_next == 0 || now - g_next > interval)
-                    g_next = now;               // primo frame, oppure siamo in ritardo: si riparte da qui
+                // Primo frame, oppure frame in ritardo (oltre il 10% dell'intervallo): si riparte da qui,
+                // senza "recuperare" con frame attaccati uno all'altro.
+                if (g_next == 0 || now > g_next + 0.1 * interval)
+                {
+                    g_next = now;
+                    dLate++;
+                }
                 else if (now < g_next)
+                {
                     WaitUntil(g_next);
+                    dWaited++;
+                }
                 g_next += interval;
+            }
+            else
+            {
+                dPassed++;
             }
         }
         else
@@ -233,6 +461,32 @@ namespace ff
         s->api = api;
         MemoryBarrier();
         s->writeIndex = idx + 1;
+
+        // Diario, una volta al minuto: i conti dell'ultimo minuto. La riga si scrive se qualcosa non torna
+        // (più fotogrammi del limite, Present passati fuori dal limitatore, limitatore non acceso), altrimenti
+        // una ogni dieci minuti. Così, se in un gioco il limite "non tiene", si vede da che parte passano i frame.
+        static int64_t statStart = 0;
+        static int statLogs = 0, statQuiet = 0;
+        if (statStart == 0) statStart = stamp;
+        else if (stamp - statStart >= 60 * g_freq)
+        {
+            double secs = (double)(stamp - statStart) / (double)g_freq;
+            double measured = dFrames / secs;
+            LONG notPrimary = InterlockedExchange(&g_diagNotPrimary, 0), retry = InterlockedExchange(&g_diagRetry, 0);
+            bool over = fps >= 1.0 && measured > fps * 1.05;
+            bool odd = over || fps < 1.0 || dIgnored > 0 || notPrimary > 0 || retry > 0;
+            if ((odd || ++statQuiet >= 10) && statLogs < 120)
+            {
+                statLogs++;
+                statQuiet = 0;
+                Log("Stato%s: %s, limite %.0f, %.1f fps in %.0f s (attesi %u, in ritardo %u, generati %u, raffica x%d), "
+                    "fuori dal limitatore: altre API %u, altri swapchain %ld, tentativi ripetuti %ld",
+                    over ? " (PIU' DEL LIMITE)" : "", ApiName(api), fps, measured, secs, dWaited, dLate, dPassed, burst,
+                    dIgnored, (long)notPrimary, (long)retry);
+            }
+            statStart = stamp;
+            dFrames = dWaited = dLate = dPassed = dIgnored = 0;
+        }
         lastExit = Qpc();
     }
 
@@ -292,8 +546,9 @@ namespace ff
 
         out.width = g_ovW;
         out.height = g_ovH;
-        out.corner = s->ovCorner;
-        out.margin = s->ovMargin;
+        uint32_t corner = s->ovCorner, margin = s->ovMargin;   // scritti dall'app: si controllano
+        out.corner = corner <= 4 ? corner : 0;
+        out.margin = margin <= 4096 ? margin : 0;
         out.pixels = g_ovLocal.data();
         out.serial = g_ovSerial;
         float nits = s->hdrWhiteNits;   // 4 byte allineati: lettura atomica, nessun blocco
@@ -394,7 +649,7 @@ namespace ff
             void* hook;
             void** original;
             uint8_t bytes[5];   // inizio della funzione subito dopo il nostro aggancio
-            int repairs;
+            bool reported;      // già scritto nel diario che un altro programma l'ha sostituito
         };
         Inline g_inline[16];
         int g_inlineCount = 0;
@@ -416,7 +671,7 @@ namespace ff
     bool InlineHook(const char* name, void* target, void* hook, void** original)
     {
         if (!target || g_inlineCount >= 16) return false;
-        Inline h = { name, (uint8_t*)target, hook, original, {}, 0 };
+        Inline h = { name, (uint8_t*)target, hook, original, {}, false };
         if (!Apply(h)) return false;
         g_inline[g_inlineCount++] = h;
         Log("%s agganciata a %p", name, target);
@@ -428,14 +683,12 @@ namespace ff
         for (int i = 0; i < g_inlineCount; i++)
         {
             Inline& h = g_inline[i];
-            // Pochi tentativi: insistere servirebbe solo a disturbare l'altro overlay. Gli agganci
-            // che contano (tabella del device, importazioni) non passano da qui.
-            if (memcmp(h.bytes, h.target, 5) == 0 || h.repairs >= 3) continue;
-            h.repairs++;
-            if (h.repairs <= 2)
-                Log("%s: aggancio cancellato da un altro programma, viene rimesso (tentativo %d)", h.name, h.repairs);
-            MH_RemoveHook(h.target);    // dimentica la vecchia deviazione senza toccare il codice attuale
-            Apply(h);
+            // Nessuna "riparazione": MH_RemoveHook rimetterebbe il codice originale (cancellando il salto
+            // dell'altro programma) e libererebbe il nostro trampolino mentre un thread può starci dentro.
+            // Gli agganci che contano (tabella del device, importazioni) non passano da qui.
+            if (h.reported || memcmp(h.bytes, h.target, 5) == 0) continue;
+            h.reported = true;
+            Log("%s: aggancio sostituito da un altro programma, lo lascio com'è", h.name);
         }
     }
 
@@ -471,8 +724,20 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(module);
-        HANDLE t = CreateThread(nullptr, 0, ff::InitThread, module, 0, nullptr);
-        if (t) CloseHandle(t);
+        // Due modi di arrivare qui. Iniezione (ffinject): l'iniettore crea prima un segnale con il PID del
+        // gioco, e allora si parte come sempre. Altrimenti è il loader Vulkan che carica il layer in un
+        // programma qualunque: qui non si avvia nulla (il loader può scaricare la DLL subito dopo, se il
+        // layer viene rifiutato); il layer si prepara da sé in vkCreateInstance, solo se accettato.
+        wchar_t name[64];
+        swprintf_s(name, FF_INJECT_MARKER_PREFIX L"%lu", GetCurrentProcessId());
+        HANDLE marker = OpenEventW(SYNCHRONIZE, FALSE, name);
+        if (marker)
+        {
+            CloseHandle(marker);
+            ff::PinSelf();
+            HANDLE t = CreateThread(nullptr, 0, ff::InitThread, module, 0, nullptr);
+            if (t) CloseHandle(t);
+        }
     }
     return TRUE;
 }

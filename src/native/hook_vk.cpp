@@ -14,6 +14,8 @@
 #include <vector>
 #include <string>
 #include <cwctype>
+#include <cwchar>
+#include <tlhelp32.h>
 #include "vk_shaders.h"
 
 // A 32 bit le funzioni Vulkan usano la convenzione stdcall, che cambia il nome esportato.
@@ -130,10 +132,14 @@ namespace
         VkState* vk;
     };
 
-    const int kMax = 16;
+    const int kMax = 64;
     InstanceData g_instances[kMax];
     DeviceData g_devices[kMax];
     SRWLOCK g_lock = SRWLOCK_INIT;
+    // GetDeviceProcAddr del layer successivo (è la stessa funzione per tutti i device): serve per lasciar
+    // passare senza di noi un device che non è entrato nella tabella (tabella piena).
+    PFN_vkGetDeviceProcAddr volatile g_nextDeviceProcAddr = nullptr;
+    PFN_vkGetInstanceProcAddr volatile g_nextInstanceProcAddr = nullptr;   // lo stesso per le istanze
 
     template <typename T> T* Find(T* table, void* key)
     {
@@ -151,13 +157,14 @@ namespace
         return copy;
     }
 
-    template <typename T> void Store(T* table, const T& value)
+    template <typename T> bool Store(T* table, const T& value)
     {
         AcquireSRWLockExclusive(&g_lock);
         T* slot = Find(table, value.key);
         if (!slot) slot = Find(table, nullptr);
         if (slot) *slot = value;
         ReleaseSRWLockExclusive(&g_lock);
+        return slot != nullptr;
     }
 
     template <typename T> void Erase(T* table, void* key)
@@ -177,6 +184,7 @@ namespace
     // ---------------------------------------------------------------- overlay: risorse
 
     const uint64_t kWaitNs = 1000000000ull;   // attesa massima di un nostro comando precedente: 1 secondo
+    const uint32_t kMaxWaits = 64;            // semafori di attesa di una presentazione che sappiamo gestire
 
     bool IsSrgb(VkFormat f)
     {
@@ -529,6 +537,7 @@ namespace
     bool Draw(VkState* vk, VkQueue queue, const VkPresentInfoKHR* info, const ff::Overlay& ov, VkSemaphore* wait)
     {
         if (!vk || vk->failed || !vk->complete || info->swapchainCount == 0) return false;
+        if (info->waitSemaphoreCount > kMaxWaits) return false;   // caso limite: niente overlay, presentazione intatta
         const Fn& fn = vk->fn;
         VkDevice dev = vk->device;
 
@@ -648,11 +657,12 @@ namespace
         fn.CmdEndRenderPass(f.cmd);
         if (fn.EndCommandBuffer(f.cmd) != VK_SUCCESS) return false;
 
-        std::vector<VkPipelineStageFlags> stages(info->waitSemaphoreCount, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        VkPipelineStageFlags stages[kMaxWaits];   // niente allocazioni a ogni frame
+        for (uint32_t i = 0; i < info->waitSemaphoreCount; i++) stages[i] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
         submit.waitSemaphoreCount = info->waitSemaphoreCount;
         submit.pWaitSemaphores = info->pWaitSemaphores;
-        submit.pWaitDstStageMask = stages.data();
+        submit.pWaitDstStageMask = stages;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &f.cmd;
         submit.signalSemaphoreCount = 1;
@@ -690,14 +700,19 @@ namespace
         PFN_vkGetInstanceProcAddr next = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
         link->u.pLayerInfo = link->u.pLayerInfo->pNext;   // il layer successivo deve vedere il suo collegamento
 
+        // Il layer è stato accettato (vkNegotiateLoaderLayerInterfaceVersion): da qui la DLL resta caricata
+        // e la memoria condivisa esiste prima del primo frame del gioco.
+        ff::StartLayerMode();
+        g_nextInstanceProcAddr = next;
+
         auto create = (PFN_vkCreateInstance)next(VK_NULL_HANDLE, "vkCreateInstance");
         if (!create) return VK_ERROR_INITIALIZATION_FAILED;
         VkResult result = create(info, alloc, instance);
         if (result != VK_SUCCESS) return result;
 
         InstanceData data = { Key(*instance), *instance, next, (PFN_vkDestroyInstance)next(*instance, "vkDestroyInstance") };
-        Store(g_instances, data);
-        ff::Log("Vulkan: layer attivo sull'istanza del gioco");
+        if (Store(g_instances, data)) ff::Log("Vulkan: layer attivo sull'istanza del gioco");
+        else ff::Log("Vulkan: troppe istanze, questa passa senza layer");
         return VK_SUCCESS;
     }
 
@@ -714,24 +729,36 @@ namespace
     VKAPI_ATTR VkResult VKAPI_CALL QueuePresent(VkQueue queue, const VkPresentInfoKHR* info)
     {
         DeviceData data = Lookup(g_devices, Key(queue));
-        ff::OnFrame(FF_API_VULKAN);
+        // Device sconosciuto (corsa con DestroyDevice): GetDeviceProcAddr non ci mette in mezzo ai device
+        // che non conosciamo, quindi qui si arriva solo per errore del gioco.
         if (!data.present) return VK_ERROR_DEVICE_LOST;
 
-        ff::Overlay ov;
-        if (data.vk && info && ff::GetOverlay(ov))
+        // Se un'altra API presenta già i frame del gioco (es. Vulkan HDR presentato dal driver via DXGI)
+        // overlay e limitatore restano a lei.
+        if (!ff::OwnsFrames(FF_API_VULKAN)) return data.present(queue, info);
+
+        ff::OnFrame(FF_API_VULKAN);
+        if (data.vk && info)
         {
-            VkSemaphore wait = VK_NULL_HANDLE;
-            bool drawn;
+            // Due thread che presentano insieme: uno solo disegna, l'altro salta l'overlay (mai attese).
+            ff::OverlayTryLock overlayLock;
+            ff::Overlay ov;
+            if (overlayLock.locked && ff::GetOverlay(ov))
             {
-                Guard guard(&data.vk->lock);
-                drawn = Draw(data.vk, queue, info, ov, &wait);
-            }
-            if (drawn)
-            {
-                VkPresentInfoKHR copy = *info;
-                copy.waitSemaphoreCount = 1;
-                copy.pWaitSemaphores = &wait;
-                return data.present(queue, &copy);
+                VkSemaphore wait = VK_NULL_HANDLE;
+                bool drawn = false;
+                if (TryAcquireSRWLockExclusive(&data.vk->lock))
+                {
+                    drawn = Draw(data.vk, queue, info, ov, &wait);
+                    ReleaseSRWLockExclusive(&data.vk->lock);
+                }
+                if (drawn)
+                {
+                    VkPresentInfoKHR copy = *info;
+                    copy.waitSemaphoreCount = 1;
+                    copy.pWaitSemaphores = &wait;
+                    return data.present(queue, &copy);
+                }
             }
         }
         return data.present(queue, info);
@@ -861,7 +888,14 @@ namespace
         data.destroy = (PFN_vkDestroyDevice)nextDevice(*device, "vkDestroyDevice");
         data.present = (PFN_vkQueuePresentKHR)nextDevice(*device, "vkQueuePresentKHR");
         data.vk = vk;
-        Store(g_devices, data);
+        g_nextDeviceProcAddr = nextDevice;
+        if (!Store(g_devices, data))
+        {
+            // Tabella piena: il device funziona lo stesso, solo senza di noi (GetDeviceProcAddr lo lascia passare).
+            delete vk;
+            ff::Log("Vulkan: troppi device, questo passa senza layer");
+            return VK_SUCCESS;
+        }
         ff::Log("Vulkan: device del gioco agganciato (presentazione %s, overlay %s)",
                 data.present ? "disponibile" : "assente", complete ? "possibile" : "non possibile");
         return VK_SUCCESS;
@@ -894,8 +928,14 @@ namespace
     VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetDeviceProcAddr(VkDevice device, const char* name)
     {
         if (!strcmp(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)GetDeviceProcAddr;
+        DeviceData data = device ? Lookup(g_devices, Key(device)) : DeviceData{};
+        if (device && !data.nextGetProcAddr)
+        {
+            // Device che non conosciamo: tutte le sue funzioni vanno dritte al layer successivo.
+            PFN_vkGetDeviceProcAddr next = g_nextDeviceProcAddr;
+            return next ? next(device, name) : nullptr;
+        }
         if (PFN_vkVoidFunction hook = DeviceHook(name)) return hook;
-        DeviceData data = Lookup(g_devices, Key(device));
         return data.nextGetProcAddr ? data.nextGetProcAddr(device, name) : nullptr;
     }
 
@@ -903,37 +943,56 @@ namespace
     {
         if (!strcmp(name, "vkGetInstanceProcAddr")) return (PFN_vkVoidFunction)GetInstanceProcAddr;
         if (!strcmp(name, "vkCreateInstance")) return (PFN_vkVoidFunction)CreateInstance;
+        InstanceData data = {};
+        if (instance)
+        {
+            data = Lookup(g_instances, Key(instance));
+            if (!data.nextGetProcAddr)
+            {
+                // Istanza che non conosciamo (tabella piena): tutto dritto al layer successivo.
+                PFN_vkGetInstanceProcAddr next = g_nextInstanceProcAddr;
+                return next ? next(instance, name) : nullptr;
+            }
+        }
         if (!strcmp(name, "vkDestroyInstance")) return (PFN_vkVoidFunction)DestroyInstance;
         if (!strcmp(name, "vkCreateDevice")) return (PFN_vkVoidFunction)CreateDevice;
         if (!strcmp(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)GetDeviceProcAddr;
         if (PFN_vkVoidFunction hook = DeviceHook(name)) return hook;
         if (!instance) return nullptr;
-        InstanceData data = Lookup(g_instances, Key(instance));
-        return data.nextGetProcAddr ? data.nextGetProcAddr(instance, name) : nullptr;
+        return data.nextGetProcAddr(instance, name);
     }
 }
 
-// Esclusioni dell'utente (%APPDATA%\FrameGrip\excluded-processes.txt, lo stesso file letto dall'app):
-// [not-games] nomi di processi senza .exe, [background-paths] pezzi di percorso. "exe" è già in minuscolo.
-static bool UserExcluded(const wchar_t* exe)
+// Elenchi dell'utente (%APPDATA%\FrameGrip\excluded-processes.txt, lo stesso file letto dall'app):
+// [not-games] nomi di processi senza .exe, [background-paths] pezzi di percorso,
+// [force-hook] nomi di processi da agganciare anche se sembrano protetti da un anti-cheat.
+// "exe" è già in minuscolo.
+struct UserLists
 {
+    bool excluded = false;    // in [not-games] o [background-paths]
+    bool forceHook = false;   // in [force-hook]
+};
+
+static UserLists ReadUserLists(const wchar_t* exe)
+{
+    UserLists result;
     wchar_t dir[MAX_PATH] = {};
     DWORD n = GetEnvironmentVariableW(L"APPDATA", dir, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH - 64) return false;
+    if (n == 0 || n >= MAX_PATH - 64) return result;
     std::wstring path = std::wstring(dir) + L"\\FrameGrip\\excluded-processes.txt";
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return false;
+    if (f == INVALID_HANDLE_VALUE) return result;
     char buf[16384];
     DWORD got = 0;
     BOOL ok = ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr);
     CloseHandle(f);
-    if (!ok || got == 0) return false;
+    if (!ok || got == 0) return result;
     buf[got] = 0;
     int wlen = MultiByteToWideChar(CP_UTF8, 0, buf, (int)got, nullptr, 0);
     std::wstring text(wlen, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, buf, (int)got, text.data(), wlen);
     for (auto& c : text) c = towlower(c);
-    int section = 0;   // 1 = [not-games], 2 = [background-paths]
+    int section = 0;   // 1 = [not-games], 2 = [background-paths], 3 = [force-hook]
     size_t pos = 0;
     while (pos < text.size())
     {
@@ -946,18 +1005,120 @@ static bool UserExcluded(const wchar_t* exe)
         if (a == std::wstring::npos) continue;
         line = line.substr(a);
         if (line[0] == L'#') continue;
-        if (line[0] == L'[') { section = line == L"[not-games]" ? 1 : line == L"[background-paths]" ? 2 : 0; continue; }
-        if (section == 1)
+        if (line[0] == L'[')
+        {
+            section = line == L"[not-games]" ? 1 : line == L"[background-paths]" ? 2 : line == L"[force-hook]" ? 3 : 0;
+            continue;
+        }
+        if (section == 1 || section == 3)
         {
             if (line.size() < 4 || line.compare(line.size() - 4, 4, L".exe") != 0) line += L".exe";
-            if (wcsstr(exe, (L"\\" + line).c_str())) return true;
+            if (wcsstr(exe, (L"\\" + line).c_str()))
+            {
+                if (section == 1) result.excluded = true;
+                else result.forceHook = true;
+            }
         }
-        else if (section == 2 && wcsstr(exe, line.c_str())) return true;
+        else if (section == 2 && wcsstr(exe, line.c_str())) result.excluded = true;
     }
+    return result;
+}
+
+// Strumenti di contorno che usano Vulkan ma non sono giochi (Steam, launcher, browser, registratori...).
+static bool NotAGame(const wchar_t* exe)
+{
+    static const wchar_t* const kNotGames[] = {
+        L"\\steam.exe", L"\\steamwebhelper.exe", L"\\steamsysinfo.exe", L"\\vulkandriverquery",
+        L"\\gldriverquery", L"\\steamservice.exe", L"\\framegrip.exe", L"\\epicgameslauncher.exe", L"\\galaxyclient",
+        L"\\battle.net", L"\\chrome.exe", L"\\msedge.exe", L"\\msedgewebview2.exe", L"\\firefox.exe", L"\\discord.exe",
+        L"\\obs64.exe", L"\\windhawk", L"\\cpuz", L"\\hwinfo",
+        // launcher
+        L"\\riotclientservices.exe", L"\\riotclientux", L"\\eadesktop.exe", L"\\eabackgroundservice.exe",
+        L"\\origin.exe", L"\\qtwebengineprocess.exe", L"\\rockstar games\\launcher\\", L"\\socialclubhelper.exe",
+        L"\\upc.exe", L"\\ubisoftconnect.exe", L"\\uplaywebcore.exe", L"\\ubisoftgamelauncher",
+    };
+    for (const wchar_t* name : kNotGames)
+        if (wcsstr(exe, name)) return true;
+    // Processi figli di Chromium / CEF (pagine dei launcher, browser integrati): hanno "--type=" sulla riga
+    // di comando. Il gioco che ospita CEF (processo principale) non ce l'ha.
+    const wchar_t* cmd = GetCommandLineW();
+    if (cmd && wcsstr(cmd, L"--type=") && (GetModuleHandleW(L"libcef.dll") || wcsstr(cmd, L"--type=gpu-process")))
+        return true;
     return false;
 }
 
+// Il gioco sembra protetto da un anti-cheat? Allora il layer si rifiuta: entrare in quei processi può
+// costare un ban o il blocco del gioco. Restituisce il motivo (per il diario) o nullptr.
+// "exe" è il percorso completo in minuscolo. Tutto l'elenco è qui.
+static const wchar_t* ProtectedByAntiCheat(const wchar_t* exe, wchar_t* why, size_t whyLen)
+{
+    // 1. Giochi noti con anti-cheat che non guardano la cartella (VAC, Ricochet, Vanguard...): nome dell'exe.
+    static const wchar_t* const kExePrefixes[] = {
+        L"cs2.exe", L"csgo.exe", L"dota2.exe", L"project8.exe", L"deadlock.exe", L"valorant", L"r5apex",
+        L"cod.exe", L"cod2", L"blackops", L"modernwarfare", L"fortniteclient", L"tslgame",
+        L"league of legends.exe", L"destiny2.exe", L"rainbowsix", L"eldenring.exe", L"apex_legends",
+    };
+    const wchar_t* name = wcsrchr(exe, L'\\');
+    name = name ? name + 1 : exe;
+    for (const wchar_t* p : kExePrefixes)
+        if (wcsncmp(name, p, wcslen(p)) == 0) { swprintf_s(why, whyLen, L"gioco noto (%s)", name); return why; }
+
+    // 2. Moduli anti-cheat già caricati nel processo.
+    static const wchar_t* const kModulePrefixes[] = {
+        L"easyanticheat", L"eaanticheat", L"eac_", L"beclient", L"battleye", L"bedaisy", L"vgk", L"vgc.",
+        L"mhyprot", L"mhypbase", L"gameguard", L"npggnt", L"xigncode", L"x3.xem", L"anticheat",
+    };
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+    if (snap != INVALID_HANDLE_VALUE)
+    {
+        MODULEENTRY32W me = { sizeof(me) };
+        bool found = false;
+        for (BOOL more = Module32FirstW(snap, &me); more && !found; more = Module32NextW(snap, &me))
+        {
+            _wcslwr_s(me.szModule);
+            for (const wchar_t* p : kModulePrefixes)
+                if (wcsncmp(me.szModule, p, wcslen(p)) == 0) { found = true; break; }
+            if (found) swprintf_s(why, whyLen, L"modulo %s", me.szModule);
+        }
+        CloseHandle(snap);
+        if (found) return why;
+    }
+
+    // 3. File o cartelle dell'anti-cheat accanto all'exe, o una / due cartelle più su.
+    static const wchar_t* const kMarkers[] = {
+        L"EasyAntiCheat", L"EasyAntiCheat_EOS", L"BattlEye", L"start_protected_game.exe",
+        L"EAAntiCheat.GameServiceLauncher.exe", L"BEService*.exe", L"EasyAntiCheat_launcher.exe",
+    };
+    wchar_t dir[MAX_PATH];
+    if (wcscpy_s(dir, exe) != 0) return nullptr;
+    for (int level = 0; level < 3; level++)
+    {
+        wchar_t* slash = wcsrchr(dir, L'\\');
+        if (!slash || slash == dir) break;
+        *slash = 0;   // dir = cartella dell'exe, poi quella sopra, poi quella ancora sopra
+        if (wcslen(dir) < 3) break;   // mai la radice del disco (es. "c:")
+        for (const wchar_t* m : kMarkers)
+        {
+            wchar_t path[MAX_PATH + 64];
+            swprintf_s(path, L"%s\\%s", dir, m);
+            bool hit;
+            if (wcschr(m, L'*'))
+            {
+                WIN32_FIND_DATAW fd;
+                HANDLE h = FindFirstFileExW(path, FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
+                hit = h != INVALID_HANDLE_VALUE;
+                if (hit) FindClose(h);
+            }
+            else hit = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+            if (hit) { swprintf_s(why, whyLen, L"%s", path); return why; }
+        }
+    }
+    return nullptr;
+}
+
 // Punto d'ingresso che il loader Vulkan chiama quando carica il layer.
+// Qui non si avvia nulla e non si tiene nulla: se il layer viene rifiutato il loader scarica la DLL
+// subito dopo, e deve poterlo fare senza rischi (DllMain in modo layer non avvia thread né agganci).
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* iface)
 {
     if (!iface || iface->sType != LAYER_NEGOTIATE_INTERFACE_STRUCT) return VK_ERROR_INITIALIZATION_FAILED;
@@ -968,15 +1129,19 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     _wcslwr_s(exe);
-    static const wchar_t* const kNotGames[] = {
-        L"\\steam.exe", L"\\steamwebhelper.exe", L"\\steamsysinfo.exe", L"\\vulkandriverquery",
-        L"\\gldriverquery", L"\\steamservice.exe", L"\\framegrip.exe", L"\\epicgameslauncher.exe", L"\\galaxyclient",
-        L"\\battle.net", L"\\chrome.exe", L"\\msedge.exe", L"\\msedgewebview2.exe", L"\\firefox.exe", L"\\discord.exe",
-        L"\\obs64.exe", L"\\windhawk", L"\\cpuz", L"\\hwinfo",
-    };
-    for (const wchar_t* name : kNotGames)
-        if (wcsstr(exe, name)) return VK_ERROR_INITIALIZATION_FAILED;
-    if (UserExcluded(exe)) return VK_ERROR_INITIALIZATION_FAILED;
+    if (NotAGame(exe)) return VK_ERROR_INITIALIZATION_FAILED;
+    UserLists lists = ReadUserLists(exe);
+    if (lists.excluded) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!lists.forceHook)
+    {
+        wchar_t why[MAX_PATH + 96];
+        if (ProtectedByAntiCheat(exe, why, sizeof(why) / sizeof(why[0])))
+        {
+            ff::Log("layer Vulkan rifiutato: anti-cheat (%ls). Per forzarlo: [force-hook] in excluded-processes.txt", why);
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+    }
+
     if (iface->loaderLayerInterfaceVersion > 2) iface->loaderLayerInterfaceVersion = 2;
     iface->pfnGetInstanceProcAddr = GetInstanceProcAddr;
     iface->pfnGetDeviceProcAddr = GetDeviceProcAddr;

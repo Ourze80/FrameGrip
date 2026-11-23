@@ -11,12 +11,32 @@ namespace ff
 {
     extern FFShared* g_shared;
 
+    // Preparazione comune (frequenza QPC, memoria condivisa): una volta sola, sicura tra thread.
+    bool InitCore();
+    // Modo layer Vulkan, layer accettato: blocca la DLL in memoria e fa la preparazione comune.
+    bool StartLayerMode();
+
+    // Immagine dell'overlay e texture: un solo thread alla volta. Nel Present si usa solo il tentativo
+    // (se è occupato si salta l'overlay per quel frame, mai un'attesa); fuori dal Present si può aspettare.
+    extern SRWLOCK g_overlayLock;
+    struct OverlayTryLock
+    {
+        bool locked;
+        OverlayTryLock() : locked(TryAcquireSRWLockExclusive(&g_overlayLock) != 0) {}
+        ~OverlayTryLock() { if (locked) ReleaseSRWLockExclusive(&g_overlayLock); }
+        OverlayTryLock(const OverlayTryLock&) = delete;
+        OverlayTryLock& operator=(const OverlayTryLock&) = delete;
+    };
+
     // Da chiamare una volta per frame, subito prima del Present originale:
     // applica il limitatore e registra l'istante del frame.
     void OnFrame(uint32_t api);
     // Falso se un'altra API sta già presentando i frame del gioco (es. Vulkan HDR presentato dal driver
     // tramite DXGI): allora l'overlay lo disegna lei, qui si salta (niente overlay doppio).
     bool OwnsFrames(uint32_t api);
+    // Solo per il diario (riga "Stato" di OnFrame): Present che non sono passati dal limitatore perché
+    // di uno swapchain non principale, o perché nuovo tentativo di un Present rifiutato (hook_dxgi.cpp).
+    extern volatile LONG g_diagNotPrimary, g_diagRetry;
 
     // Immagine dell'overlay preparata dall'app (BGRA premoltiplicato).
     struct Overlay
@@ -64,14 +84,20 @@ namespace ff
     void DestroyProbeWindow(HWND hwnd, HMODULE self);
 
     bool HookDxgi(HMODULE self);   // hook_dxgi.cpp
+    // Fuori dal Present (thread dell'aggancio, una volta al secondo): controlla che gli agganci nelle tabelle
+    // di DXGI siano ancora al loro posto e rimette quelli che un altro programma ha tolto.
+    void DxgiMaintain();
     // Devia il codice di una funzione (MinHook). "original" riceve il modo per chiamare quella vera.
     bool InlineHook(const char* name, void* target, void* hook, void** original);
-    // Altri overlay, quando trovano un secondo aggancio sulla stessa funzione,
-    // ripristinano il codice originale cancellando anche il nostro: qui lo si rimette.
+    // Altri overlay a volte sostituiscono il nostro aggancio sul codice: lo si annota nel diario
+    // (una volta) e lo si lascia com'è.
     void CheckInlineHooks();
 
     bool HookD3D12();              // hook_d3d12.cpp: scopre la coda di comandi del gioco
     void DrawD3D12(::IDXGISwapChain* sc);
+    // Fuori dal Present (thread dell'aggancio, una volta al secondo): libera code e risorse DirectX 12
+    // di device rimossi o che il gioco ha già buttato, così può ricreare il device (TDR).
+    void D3D12Maintain();
 
     bool HookD3D9(HMODULE self);   // hook_d3d9.cpp
     bool HookOpenGL();             // hook_gl.cpp

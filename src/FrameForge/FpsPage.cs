@@ -108,6 +108,7 @@ public sealed class FpsPage : Grid
         right.Children.Add(_measuresBox);
         right.Children.Add(_compareBox);
         _ideal.Changed += OnIdealChanged;
+        IsVisibleChanged += (_, _) => { if (IsVisible) RefreshLive(); };
         Loc.LanguageChanged += RebuildAll;
         _s.PropertyChanged += (_, e) =>
         {
@@ -137,10 +138,30 @@ public sealed class FpsPage : Grid
         RebuildAll();
     }
 
+    private string _ctxSig = "";
+
+    /// <summary>
+    /// Lo stesso gioco, con i dati rifatti dalla pagina Giochi (per esempio dopo un passo del cursore del limite).
+    /// Si aggiorna senza ricostruire: prima il cursore veniva rifatto sotto il mouse a ogni passo del trascinamento
+    /// (e perdeva il trascinamento e lo stato attivo). Si ricostruisce tutto solo se è cambiato qualcosa che lo chiede.
+    /// </summary>
+    public void UpdateContext(GameItem item)
+    {
+        if (_ctx == null || !string.Equals(_ctx.Key, item.Key, StringComparison.OrdinalIgnoreCase)) { SetContext(item); return; }
+        _ctx = item;
+        if (ContextSig() != _ctxSig) { RebuildAll(); return; }
+        Refresh();
+        UpdateLimiterValues();
+    }
+
+    // quello che, se cambia, rifà registrazione, misure e confronto (il limite scelto non ne fa parte)
+    private string ContextSig() => _ctx == null ? "" : $"{_ctx.Key}|{CtxRunning}|{MeasureStore.All.Count}|{_ctx.Measures().Count}|{_ctx.Profile(_s) != null}|{Loc.IsItalian}";
+
     private bool CtxRunning => _ctx != null && _ctx.Matches(_game());
 
     public void RebuildAll()
     {
+        _ctxSig = ContextSig();
         _limiterSig = "";
         Refresh();
         _shownState = (IdealState)(-1);
@@ -811,9 +832,20 @@ public sealed class FpsPage : Grid
         return Card(p);
     }
 
+    /// <summary>La finestra è tornata visibile: i numeri della misura in corso si rifanno subito.</summary>
+    public void RefreshLive()
+    {
+        if (_ideal.State is IdealState.Countdown or IdealState.Measuring) UpdateLive();
+    }
+
+    // la pagina si vede davvero (non in un'altra pagina, finestra non nascosta né ridotta a icona)
+    private bool Shown => IsVisible && Window.GetWindow(this) is not { WindowState: WindowState.Minimized };
+
     private void UpdateLive()
     {
         if (_runTitle == null || _timeText == null || _progFill == null || _progTrack == null) return;
+        // A finestra nascosta (si gioca mentre si misura) il grafico non si ridisegna: si rifà quando la pagina ricompare.
+        if (!Shown) return;
         if (_ideal.State == IdealState.Countdown)
         {
             _runTitle.Text = Loc.F("Ideal.Countdown", _ideal.CountdownLeft);

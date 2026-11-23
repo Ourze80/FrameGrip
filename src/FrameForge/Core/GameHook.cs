@@ -61,7 +61,14 @@ public sealed class GameHook : IDisposable
     /// <summary>L'ultimo errore di aggancio, tradotto nella lingua attuale quando lo si legge.</summary>
     public string? Error => _error?.ToString();
     private volatile LocText? _error;
+    private volatile int _errorPid;   // il processo a cui si riferisce _error
+    /// <summary>Motivo registrato quando Windows nega l'apertura del processo per l'iniezione.</summary>
+    private const string NoAccessReason = "access denied by Windows";
+    /// <summary>Un gioco che si chiude per un errore entro questo tempo dall'iniezione non si aggancia più.</summary>
+    private const int EarlyExitMs = 10_000;
     public bool HasLinks { get { lock (_gate) return _links.Count > 0; } }
+
+    public GameHook() => EmergencyCleanup.Register(this);
     /// <summary>Cresce a ogni gioco agganciato: chi manda le immagini sa che al nuovo va mandata quella intera.</summary>
     public int LinksVersion { get; private set; }
     public bool IsHooked(int pid) { lock (_gate) return _links.ContainsKey(pid); }
@@ -100,7 +107,27 @@ public sealed class GameHook : IDisposable
     public void EnsureHooked(int pid)
     {
         if (IsHooked(pid) || TryAttach(pid)) return;
+        if (_errorPid != pid) { _error = null; _errorPid = pid; }   // l'errore di un altro gioco non vale per questo
         if (Volatile.Read(ref _injecting) == 1) return;
+
+        // Giochi protetti da anti-cheat o che si sono chiusi subito dopo un aggancio: mai iniettare.
+        string? path = GameLibrary.ProcessPath(pid);
+        string exeName = path != null ? Path.GetFileNameWithoutExtension(path) : ProcessName(pid);
+        if (exeName.Length == 0) return;
+        bool forced = UserExclusions.ForceHook.Contains(exeName);
+        string? protectedBy = AntiCheat.Check(path, exeName);
+        if (protectedBy != null)
+        {
+            if (_error == null) AppLog.Write($"Hook: {exeName} (pid {pid}) not hooked: {protectedBy}");
+            _error = new LocText(protectedBy.StartsWith(NoAccessReason, StringComparison.Ordinal) ? "Hook.NoAccess" : "Hook.AntiCheat");
+            return;
+        }
+        if (!forced && AutoExclusions.Contains(exeName))
+        {
+            if (_error == null) AppLog.Write($"Hook: {exeName} (pid {pid}) not hooked: listed in {AutoExclusions.FileName}");
+            _error = new LocText("Hook.AutoExcluded");
+            return;
+        }
 
         long now = Environment.TickCount64;
         lock (_gate)
@@ -130,19 +157,36 @@ public sealed class GameHook : IDisposable
                     UseShellExecute = false,
                 });
                 if (p == null) return;
-                p.WaitForExit(12000);
-                _error = p.ExitCode switch
+                int attempt;
+                lock (_gate) attempt = _attempts.TryGetValue(pid, out var a) ? a.Count : 1;
+                if (!p.WaitForExit(12000))
+                {
+                    // L'iniettore è bloccato (il gioco non risponde): lo si chiude, l'ExitCode non esiste ancora.
+                    try { p.Kill(); p.WaitForExit(2000); } catch { }
+                    _error = new LocText("Hook.Timeout");
+                    AppLog.Write($"Hook: injector timed out on {exeName} (pid {pid}, {bits}-bit), attempt {attempt}: killed");
+                    return;
+                }
+                int code = p.ExitCode;
+                _error = code switch
                 {
                     0 => null,
                     3 => new LocText("Hook.NoAccess"),
-                    _ => new LocText("Hook.Code", p.ExitCode),
+                    8 => new LocText("Hook.Timeout"),   // il caricamento nel gioco non è finito in tempo
+                    _ => new LocText("Hook.Code", code),
                 };
-                string name = "?";
-                try { name = Process.GetProcessById(pid).ProcessName; } catch { }
-                int attempt;
-                lock (_gate) attempt = _attempts.TryGetValue(pid, out var a) ? a.Count : 1;
-                AppLog.Write($"Hook: injected into {name} (pid {pid}, {bits}-bit), attempt {attempt}, injector code {p.ExitCode}");
-                if (p.ExitCode == 0) TryAttach(pid);
+                AppLog.Write($"Hook: injected into {exeName} (pid {pid}, {bits}-bit), attempt {attempt}, injector code {code}");
+                if (code == 3)
+                {
+                    // Windows nega l'accesso al processo: gioco protetto (o avviato come amministratore). Non si riprova.
+                    AntiCheat.MarkProtected(path, exeName, NoAccessReason);
+                    return;
+                }
+                if (code == 0)
+                {
+                    TryAttach(pid);
+                    WatchEarlyExit(pid, exeName, forced);
+                }
             }
             catch (Exception ex)
             {
@@ -151,6 +195,44 @@ public sealed class GameHook : IDisposable
             finally
             {
                 Volatile.Write(ref _injecting, 0);
+            }
+        });
+    }
+
+    private static string ProcessName(int pid)
+    {
+        try { using var p = Process.GetProcessById(pid); return p.ProcessName; }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// Dopo un'iniezione riuscita: se il gioco si chiude per un errore (codice d'eccezione, per esempio 0xC0000005)
+    /// entro EarlyExitMs, lo si mette nell'elenco dei giochi da non agganciare più. Una chiusura normale (codice 0
+    /// o comunque non d'errore, come i giochi che si riavviano da Steam) non conta.
+    /// </summary>
+    private static void WatchEarlyExit(int pid, string exeName, bool forced)
+    {
+        Process game;
+        try { game = Process.GetProcessById(pid); }
+        catch { return; }   // già chiuso prima ancora di poterlo guardare: non si sa come
+        long injectedAt = Environment.TickCount64;
+        Task.Run(async () =>
+        {
+            using (game)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(EarlyExitMs);
+                    await game.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { return; }   // ancora vivo dopo 10 s: tutto bene
+                catch { return; }
+                int code;
+                try { code = game.ExitCode; } catch { return; }
+                long after = Environment.TickCount64 - injectedAt;
+                bool crash = unchecked((uint)code) >= 0x80000000u;   // NTSTATUS d'errore o d'avviso (eccezioni, breakpoint)
+                AppLog.Write($"Hook: {exeName} (pid {pid}) exited {after} ms after injection, code 0x{code:X8}" + (crash ? " (crash)" : ""));
+                if (crash && !forced) AutoExclusions.Add(exeName, $"crashed {after} ms after injection, code 0x{code:X8}");
             }
         });
     }

@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private readonly OverlayRenderer _renderer;
     private int _uiTickQueued;      // 1 se un aggiornamento dell'interfaccia è già in coda
     private string _settingsJson = "";   // impostazioni come testo, per il thread che disegna l'overlay
+    private long _settingsVersion = 1, _settingsJsonVersion;   // il testo si rifà solo quando le impostazioni cambiano
     private DispatcherTimer? _saveTimer;
     private long _saveOrder;
     private readonly OverlayWindow _overlay;
@@ -41,6 +42,13 @@ public partial class MainWindow : Window
         "vulkandriverquery", "vulkandriverquery64", "gldriverquery", "gldriverquery64", "applicationframehost", "systemsettings", "searchhost", "shellexperiencehost", "startmenuexperiencehost",
         "textinputhost", "windowsterminal", "powershell", "pwsh", "cmd", "conhost", "taskmgr", "lockapp",
         "nvidia app", "nvidia overlay", "nvcontainer", "radeonsoftware",
+        // launcher dei negozi (nomi degli eseguibili, come in GameLibrary; "Launcher" di Rockstar è troppo generico)
+        "riotclientservices", "riotclientux", "riotclientuxrender", "riotclientcrashhandler", "vgtray",
+        "eadesktop", "eabackgroundservice", "eaconnect_microsoft", "origin", "originwebhelperservice", "originclientservice",
+        "rockstarservice", "rockstarerrorhandler", "socialclubhelper", "launcherpatcher", "agent",
+        "ubisoftconnect", "uplaywebcore", "ubisoftgamelauncher", "ubisoftgamelauncher64", "uplay", "uplayservice",
+        "overwolf", "overwolfbrowser", "overwolfhelper", "overwolfhelper64", "overwolflauncher",
+        "amazon games ui", "playnite.desktopapp", "playnite.fullscreenapp",
     };
 
     // elenco di tutti i sensori
@@ -178,17 +186,25 @@ public partial class MainWindow : Window
             SaveSettingsSoon();
             if (e.PropertyName == nameof(Settings.Language)) Loc.Instance.Language = _settings.Language;
             if (e.PropertyName == nameof(Settings.AppTheme)) Theming.Apply(_settings.AppTheme, _settings.AppAccent);
-            Preview.Refresh();
-            _sensView.Refresh();
             if (e.PropertyName == nameof(Settings.AppAccent)) Theming.ApplyAccent(_settings.AppAccent);
-            if (e.PropertyName == nameof(Settings.Scale)) { _ovlScene.Fit(); _sensScene.Fit(); }
             if (e.PropertyName == nameof(Settings.CornerIndex)) UpdateSpots();   // la grandezza non cambia la misura propria dell'anteprima
             // ogni stile ha le sue grandezze del testo: passando a un altro, A−/A+ di righe e sensori mostrano le sue
             if (e.PropertyName == nameof(Settings.Layout)) foreach (var entry in _entries) entry.RefreshSize();
-            _overlay.ApplySettings();
             if (e.PropertyName == nameof(Settings.Sensors)) { _hardware.SetSelected(_settings.SelectedIds); _curated.SyncChecks(); }
+            // Limite, profili, tasti...: l'overlay non li mostra. Trascinando il cursore del limite si rifacevano
+            // a ogni passo tre anteprime e la finestra dell'overlay.
+            if (e.PropertyName != null && NotForOverlay.Contains(e.PropertyName)) return;
+            if (_overlay.IsVisible) _overlay.ApplySettings(); else _overlayStale = true;   // nascosta: si rifà quando ricompare
+            if (!Shown) { _previewsStale = true; return; }   // si rifanno quando la finestra si riapre
+            Preview.Refresh();
+            _sensView.Refresh();
+            if (e.PropertyName == nameof(Settings.Scale)) { _ovlScene.Fit(); _sensScene.Fit(); }
             SyncEntries(_hardware.Current);
         };
+        IsVisibleChanged += (_, _) => ShownChanged();
+        StateChanged += (_, _) => ShownChanged();
+        // La scelta di un tasto rapido libera tutti i tasti: lasciando la finestra si annulla, così i tasti tornano.
+        Deactivated += (_, _) => CancelCapture();
 
         _monitor.Start();
         // Una copia di sola prova dell'interfaccia non deve toccare la registrazione Vulkan dell'app vera.
@@ -225,6 +241,7 @@ public partial class MainWindow : Window
     {
         base.OnSourceInitialized(e);
         _hwnd = new WindowInteropHelper(this).Handle;
+        FitToWorkArea();   // prima che WPF la metta al centro: così si centra già con la grandezza giusta
         Theming.ApplyTitleBar(this);
         RestorePanels();
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
@@ -253,6 +270,8 @@ public partial class MainWindow : Window
         UpdateRail();
         // l'elenco dei sensori si riempie solo quando la finestra è aperta: aprendo la pagina si rifà subito
         if (NavSensors.IsChecked == true) { SyncTree(_hardware.Current); SyncEntries(_hardware.Current); _curated.Sync(_hardware.Current); }
+        // anche l'elenco dei giochi si aggiorna solo mentre si vede
+        if (NavGames.IsChecked == true && _fpsPage != null) _games.Refresh();
     }
 
     /// <summary>Titolo della pagina aperta e versione con la lingua in fondo alla barra.</summary>
@@ -451,6 +470,9 @@ public partial class MainWindow : Window
     /// </summary>
     private void SaveSettingsSoon()
     {
+        // Ogni modifica passa di qui (anche quelle alle raccolte, che non avvisano da sole): il testo delle
+        // impostazioni per l'overlay nel gioco va rifatto.
+        _settingsVersion++;
         if (_saveTimer == null)
         {
             _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
@@ -458,6 +480,9 @@ public partial class MainWindow : Window
             {
                 _saveTimer!.Stop();
                 string json = _settings.ToJson();
+                // lo stesso testo serve anche al thread dell'overlay: non lo si rifà un'altra volta
+                _settingsJson = json;
+                _settingsJsonVersion = _settingsVersion;
                 long order = ++_saveOrder;
                 Task.Run(() => Settings.SaveJson(json, order));
             };
@@ -474,7 +499,83 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------ ciclo principale
 
+    /// <summary>Le proprietà che l'overlay e le anteprime non mostrano: cambiarle non le rifà.</summary>
+    private static readonly HashSet<string> NotForOverlay = new(StringComparer.Ordinal)
+    {
+        nameof(Settings.LimiterFps), nameof(Settings.LimiterEnabled), nameof(Settings.GameProfiles), nameof(Settings.VrrDisplay),
+        nameof(Settings.IdealMinutes), nameof(Settings.IdealSound), nameof(Settings.ProfilesOpen), nameof(Settings.HdrWhiteNits),
+        nameof(Settings.HotkeyModifiers), nameof(Settings.HotkeyVk), nameof(Settings.HotkeyName),
+        nameof(Settings.RecordModifiers), nameof(Settings.RecordVk), nameof(Settings.RecordName),
+        nameof(Settings.IdealModifiers), nameof(Settings.IdealVk), nameof(Settings.IdealName),
+        nameof(Settings.CloseToTray), nameof(Settings.HideOnClose), nameof(Settings.AppTheme), nameof(Settings.AppAccent),
+    };
+
+    private bool _previewsStale, _overlayStale, _wasShown, _lastHooked;
+
+    /// <summary>La finestra si vede davvero (non nascosta nell'area di notifica, non ridotta a icona).</summary>
+    private bool Shown => IsVisible && WindowState != WindowState.Minimized;
+
+    /// <summary>Finestra nascosta, ridotta o riaperta: quando torna visibile si rifà subito quello che da nascosta si saltava.</summary>
+    private void ShownChanged()
+    {
+        if (!IsVisible) CancelCapture();
+        bool shown = Shown;
+        if (shown == _wasShown) return;
+        _wasShown = shown;
+        if (shown) Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(RefreshShownUi));
+    }
+
+    private void RefreshShownUi()
+    {
+        if (!Shown) return;
+        try
+        {
+            var hw = _hardware.Current;
+            if (_previewsStale)
+            {
+                _previewsStale = false;
+                Preview.Refresh();
+                _sensView.Refresh();
+                _ovlScene.Fit();
+                _sensScene.Fit();
+            }
+            UpdateDriverPanel();
+            if (NavGames.IsChecked == true) _games.Refresh();
+            if (NavSensors.IsChecked == true) { SyncTree(hw); SyncEntries(hw); _curated.Sync(hw); }
+            UpdateValuesCount(hw);
+            UpdateLimiterStatus(_lastHooked);
+            _fpsPage.RefreshLive();
+            UpdateStatusBar();
+        }
+        catch (Exception ex) { LogError("Show", ex); }
+    }
+
+    private static readonly Dictionary<string, DateTime> _errorLogged = new();
+
+    /// <summary>Un errore nel ciclo non deve far cadere l'app: si scrive nel diario, la stessa riga al massimo ogni minuto.</summary>
+    internal static void LogError(string where, Exception ex)
+    {
+        try
+        {
+            string key = where + "|" + ex.GetType().Name + "|" + ex.Message;
+            lock (_errorLogged)
+            {
+                if (_errorLogged.TryGetValue(key, out var last) && DateTime.UtcNow - last < TimeSpan.FromMinutes(1)) return;
+                if (_errorLogged.Count > 200) _errorLogged.Clear();
+                _errorLogged[key] = DateTime.UtcNow;
+            }
+            AppLog.Write($"Error ({where}): {ex}");
+        }
+        catch { /* il diario non deve mai far cadere l'app */ }
+    }
+
     private void Tick()
+    {
+        try { TickCore(); }
+        catch (Exception ex) { LogError("Tick", ex); }
+    }
+
+    private void TickCore()
     {
         UpdateTarget();
 
@@ -488,8 +589,10 @@ public partial class MainWindow : Window
         var etwFrames = _targetPid != 0 ? _monitor.GetSnapshot(_targetPid) : null;
         // La misura fatta dentro il gioco è la più precisa: se c'è, ha la precedenza.
         int shown = _shownPid;
-        var frames = _lastFrames = (shown != 0 ? _hook.GetSnapshot(shown) : null)
-            ?? (shown == _targetPid ? etwFrames : shown != 0 ? _monitor.GetSnapshot(shown) : null);
+        var hookFrames = shown != 0 ? _hook.GetSnapshot(shown) : null;
+        var shownEtw = hookFrames != null ? null : shown == _targetPid ? etwFrames : shown != 0 ? _monitor.GetSnapshot(shown) : null;
+        var frames = _lastFrames = hookFrames ?? shownEtw;
+        CheckHookBypass(shown, hookFrames, shownEtw);
         string? rec = _benchmark.IsRecording ? _benchmark.Elapsed.ToString(@"m\:ss") : null;
         string? api = shown != 0 ? _hook.GetApiName(shown) : null;
         _ideal.Tick(_tick % 10 == 9 && _ideal.State == IdealState.Measuring ? LoadNow(hw) : null, _settings.IdealSound);
@@ -519,7 +622,12 @@ public partial class MainWindow : Window
         bool wantWindow = showOverlay && !inGame;
         if (wantWindow != _overlay.IsVisible)
         {
-            if (wantWindow) _overlay.Show(); else _overlay.Hide();
+            if (wantWindow)
+            {
+                if (_overlayStale) { _overlayStale = false; _overlay.ApplySettings(); }
+                _overlay.Show();
+            }
+            else _overlay.Hide();
         }
         if (_overlay.IsVisible) _overlay.View.Update(data);
 
@@ -527,8 +635,15 @@ public partial class MainWindow : Window
         {
             // L'immagine per il gioco si disegna su un altro thread (OverlayRenderer), con una copia delle
             // impostazioni rifatta solo quando cambiano; la linea del grafico la aggiunge OverlayPump.
-            double dpi = VisualTreeHelper.GetDpi(this).DpiScaleX;
-            _settingsJson = _settings.ToJson();
+            // Prima il testo si rifaceva dieci volte al secondo anche senza nessuna modifica.
+            // Per sicurezza (una modifica che non passasse da SaveSettingsSoon) si rifà comunque ogni 5 secondi:
+            // il thread dell'overlay rilegge le impostazioni solo se il testo è davvero diverso.
+            double dpi = _gameDpi > 0 && _game != null && _game.Pid == shown ? _gameDpi : VisualTreeHelper.GetDpi(this).DpiScaleX;
+            if (_settingsJsonVersion != _settingsVersion || _tick % 50 == 0)
+            {
+                _settingsJson = _settings.ToJson();
+                _settingsJsonVersion = _settingsVersion;
+            }
             var source = shown != 0 ? _hook.GetStats(shown) ?? _monitor.GetStats(shown) : null;
             _renderer.Request(_settingsJson, data, dpi, _settings.Corner, (int)(16 * dpi), source);
         }
@@ -540,19 +655,21 @@ public partial class MainWindow : Window
 
         if (++_tick % 10 != 0) return; // il resto una volta al secondo
 
-        // Con la finestra ridotta a icona si leggono solo i sensori che servono all'overlay.
-        bool minimized = WindowState == WindowState.Minimized || !IsVisible;
-        _hardware.PollAll = !minimized || _ideal.Busy;   // durante la misura servono GPU, VRAM e core
+        // Leggere tutto l'hardware (chip della scheda madre, controller USB, alimentatore, rete, registri di ogni core)
+        // può dare micro-scatti nei giochi: lo si fa solo quando qualcuno guarda l'elenco completo (pagina Sensori o
+        // guida iniziale, a finestra aperta). Altrimenti solo i sensori dell'overlay; durante la misura del limite
+        // ideale anche processore e scheda video, che danno carico della GPU, VRAM e core.
+        bool minimized = !Shown;
+        _hardware.PollAll = !minimized && (PageSensors.Visibility == Visibility.Visible || _guide.IsVisible);
+        _hardware.PollCpuGpu = _ideal.Busy;
         UpdateGame(api);
-        _games.Refresh();
+        if (!minimized && NavGames.IsChecked == true) _games.Refresh();   // nascosta: si rifà quando la si riapre
         RecordButton.IsEnabled = StatusRecord.IsEnabled = !_ideal.Busy;
         if (!_settings.DefaultsApplied && hw.All.Count > 0) ApplyDefaultSensors(hw);
         if (!minimized)
         {
             UpdateDriverPanel();
-            SyncTree(hw);
-            SyncEntries(hw);
-            if (NavSensors.IsChecked == true) _curated.Sync(hw);
+            if (NavSensors.IsChecked == true) { SyncTree(hw); SyncEntries(hw); _curated.Sync(hw); }
             if (_guide.IsVisible) { _curated.Sync(hw); _guide.UpdateFound(); }
             UpdateValuesCount(hw);
         }
@@ -586,7 +703,7 @@ public partial class MainWindow : Window
             : Loc.F("Target.Active", _shownName) + (inGame ? Loc.T("Target.InGame")
                 : hooked ? Loc.T("Target.Hooked") : frames == null ? Loc.T("Target.NoFrames")
                 : _skipReason != null ? Loc.F("Target.NotHooked", Loc.T(_skipReason)) : "");
-        UpdateStatusBar();
+        if (!minimized) UpdateStatusBar();   // nascosta: si rifà quando la si riapre (RefreshShownUi)
     }
 
     // Solo per le foto automatiche (FRAMEGRIP_SNAPSHOT_DIR, che non vale mai per chi usa l'app): la shell delle prove
@@ -672,6 +789,38 @@ public partial class MainWindow : Window
         }
     }
 
+    // Diario: un gioco agganciato presenta fotogrammi (li conta Windows) ma dalla DLL non ne passa nessuno,
+    // perché un altro programma nel gioco ha tolto o scavalcato l'aggancio. In quel caso limitatore e overlay
+    // nel gioco non lavorano e il contatore mostra gli FPS contati da Windows: senza questa riga non resterebbe
+    // traccia (la DLL, non vedendo fotogrammi, non scrive niente).
+    private int _bypassPid, _bypassLogs;
+    private long _bypassSince;
+    private bool _bypassLogged;
+
+    private void CheckHookBypass(int pid, FrameSnapshot? hookFrames, FrameSnapshot? windowsFrames)
+    {
+        if (pid != _bypassPid) { _bypassPid = pid; _bypassSince = 0; _bypassLogged = false; }
+        bool bypass = pid != 0 && hookFrames == null && windowsFrames is { Fps: >= 10 } && _hook.IsHooked(pid);
+        if (!bypass)
+        {
+            if (_bypassLogged && hookFrames != null)
+            {
+                _bypassLogged = false;
+                AppLog.Write($"Hook: {_shownName} (pid {pid}): frames reach the hook again");
+            }
+            _bypassSince = 0;
+            return;
+        }
+        long now = Environment.TickCount64;
+        if (_bypassSince == 0) _bypassSince = now;
+        else if (!_bypassLogged && now - _bypassSince >= 5000 && _bypassLogs < 20)
+        {
+            _bypassLogged = true;
+            _bypassLogs++;
+            AppLog.Write($"Hook: {_shownName} (pid {pid}) presents {windowsFrames!.Fps:0} fps but no frame reaches the hook: limiter and in-game overlay are not working");
+        }
+    }
+
     /// <summary>Aggancia il gioco in primo piano quando servono overlay o limitatore.</summary>
     private bool UpdateHook(bool targetPresentsFrames)
     {
@@ -708,12 +857,20 @@ public partial class MainWindow : Window
             }
         }
 
-        _fpsPage.StatusText.Text = _ideal.SuspendsLimiter ? Loc.T("Ideal.Suspended") : !_settings.LimiterEnabled
+        _lastHooked = hooked;
+        if (Shown) UpdateLimiterStatus(hooked);   // nascosta: si rifà quando la si riapre
+        return hooked;
+    }
+
+    /// <summary>La riga sotto il limitatore nella pagina del gioco: dove vale il limite adesso.</summary>
+    private void UpdateLimiterStatus(bool hooked)
+    {
+        string text = _ideal.SuspendsLimiter ? Loc.T("Ideal.Suspended") : !_settings.LimiterEnabled
             ? Loc.T("Limiter.Applies")
             : hooked
                 ? Loc.F("Limiter.ActiveOn", _targetName)
                 : _hook.Error ?? Loc.T("Limiter.Waiting");
-        return hooked;
+        if (_fpsPage.StatusText.Text != text) _fpsPage.StatusText.Text = text;
     }
 
     /// <summary>
@@ -723,7 +880,7 @@ public partial class MainWindow : Window
     private void UpdateGame(string? api)
     {
         int pid = _shownPid;
-        if (pid == 0 || (api == null && !_hook.IsHooked(pid))) { _game = null; return; }
+        if (pid == 0 || (api == null && !_hook.IsHooked(pid))) { _game = null; SetGameMonitor(IntPtr.Zero); return; }
         if (pid != _gamePid) { _gamePid = pid; _gameHwnd = IntPtr.Zero; _gameMode = WindowMode.Unknown; _gamePath = GameLibrary.ProcessPath(pid); }
         IntPtr fg = Native.GetForegroundWindow();
         Native.GetWindowThreadProcessId(fg, out uint fgPid);
@@ -734,11 +891,14 @@ public partial class MainWindow : Window
             if (_gameHwnd != IntPtr.Zero && _gameMode == WindowMode.Unknown) _gameMode = DisplayInfo.Mode(_gameHwnd, false);
         }
         int hz = _gameHwnd != IntPtr.Zero ? DisplayInfo.RefreshHz(_gameHwnd) : 0;
+        SetGameMonitor(_gameHwnd);
         var stats = _hook.GetStats(pid) ?? _monitor.GetStats(pid);
         string exe = (_shownName + ".exe").ToLowerInvariant();
         string name = string.IsNullOrWhiteSpace(_shownTitle) ? _shownName : _shownTitle;
         var lib = GameLibrary.Find(_gamePath);
-        _game = new GameInfo(pid, exe, name, hz, _gameMode, stats, stats?.FrameGenMultiplier ?? 1, _gamePath, lib?.Store, lib?.AppId);
+        // frequenza esatta (es. 143,98 Hz): si rilegge solo quando cambiano finestra o frequenza intera
+        if (_gameHwnd != _rateHwnd || hz != _rateHz) { _rateHwnd = _gameHwnd; _rateHz = hz; _rate = _gameHwnd != IntPtr.Zero ? DisplayInfo.RefreshRate(_gameHwnd) : 0; }
+        _game = new GameInfo(pid, exe, name, hz, _gameMode, stats, stats?.FrameGenMultiplier ?? 1, _gamePath, lib?.Store, lib?.AppId, RefreshRate: _rate);
 
         // Cronologia dei giochi agganciati: serve a "Aggiungi un gioco" nei profili.
         if (exe != _lastSeenExe)
@@ -761,6 +921,10 @@ public partial class MainWindow : Window
             SaveSettingsSoon();
         }
     }
+
+    private IntPtr _rateHwnd;
+    private int _rateHz;
+    private double _rate;
 
     private bool IsLibraryGame(int pid, string name)
     {
@@ -800,6 +964,68 @@ public partial class MainWindow : Window
         return new LoadSample(0, gpu, total > 0 ? (float)(vramMb / total * 100) : 0, core);
     }
 
+    // ------------------------------------------------------------ schermo del gioco
+
+    [System.Runtime.InteropServices.DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint dpiX, out uint dpiY);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(CursorPoint pt, uint flags);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out CursorPoint pt);
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct CursorPoint { public int X, Y; }
+
+    private double _gameDpi;            // scala dello schermo del gioco (0 = non nota: si usa quella della finestra)
+    private IntPtr _gameMonitor;
+
+    /// <summary>Scala (DPI efficaci / 96) di uno schermo, oppure 0 se non si sa.</summary>
+    private static double MonitorScale(IntPtr monitor) =>
+        monitor != IntPtr.Zero && GetDpiForMonitor(monitor, 0 /* MDT_EFFECTIVE_DPI */, out uint x, out _) == 0 && x > 0 ? x / 96.0 : 0;
+
+    /// <summary>
+    /// Lo schermo su cui sta il gioco: l'immagine dell'overlay nel gioco si disegna con la sua scala, e l'overlay
+    /// esterno va nel suo angolo (prima valevano sempre la scala della finestra di FrameGrip e lo schermo principale).
+    /// </summary>
+    private void SetGameMonitor(IntPtr gameHwnd)
+    {
+        IntPtr mon = gameHwnd != IntPtr.Zero ? Native.MonitorFromWindow(gameHwnd, Native.MONITOR_DEFAULTTONEAREST) : IntPtr.Zero;
+        _overlay.GameWindow = gameHwnd;
+        if (mon == _gameMonitor) return;
+        _gameMonitor = mon;
+        _gameDpi = MonitorScale(mon);
+        // limiti di grandezza del pannello: lo schermo del gioco, se non è il principale (sul principale non cambia nulla)
+        Size? screen = null;
+        var info = new Native.MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf<Native.MonitorInfo>() };
+        if (mon != IntPtr.Zero && _gameDpi > 0 && Native.GetMonitorInfo(mon, ref info) && (info.Flags & 1 /* MONITORINFOF_PRIMARY */) == 0)
+            screen = new Size((info.Monitor.Right - info.Monitor.Left) / _gameDpi, (info.Monitor.Bottom - info.Monitor.Top) / _gameDpi);
+        OverlayView.GameScreen = screen;
+    }
+
+    /// <summary>
+    /// Alla prima apertura la finestra deve stare nell'area di lavoro del suo schermo (portatili, schermi piccoli o
+    /// ingranditi): grandezza e minimi si riducono solo se non ci stanno. Su uno schermo grande non cambia nulla.
+    /// </summary>
+    private void FitToWorkArea()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+        // "al centro dello schermo": WPF sceglie lo schermo del puntatore del mouse
+        IntPtr mon = WindowStartupLocation == WindowStartupLocation.CenterScreen && GetCursorPos(out var pt)
+            ? MonitorFromPoint(pt, Native.MONITOR_DEFAULTTONEAREST)
+            : Native.MonitorFromWindow(_hwnd, Native.MONITOR_DEFAULTTONEAREST);
+        var info = new Native.MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf<Native.MonitorInfo>() };
+        if (!Native.GetMonitorInfo(mon, ref info)) return;
+        double scale = MonitorScale(mon);
+        if (scale <= 0) scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        double workW = Math.Floor((info.Work.Right - info.Work.Left) / scale);
+        double workH = Math.Floor((info.Work.Bottom - info.Work.Top) / scale);
+        if (workW < 200 || workH < 200) return;
+        if (MinWidth > workW) MinWidth = workW;
+        if (MinHeight > workH) MinHeight = workH;
+        if (Width > workW) Width = workW;
+        if (Height > workH) Height = workH;
+        if (Width == workW || Height == workH) AppLog.Write($"Window fitted to work area {workW}x{workH} (scale {scale:0.##})");
+    }
+
     // ------------------------------------------------------------ tasti rapidi (funzionano anche dentro i giochi)
 
     /// <summary>
@@ -834,6 +1060,17 @@ public partial class MainWindow : Window
         // I tasti attuali vengono liberati: così si può riscegliere anche la stessa combinazione.
         foreach (int k in HotkeysPanel.Ids) Native.UnregisterHotKey(_hwnd, k);
         RefreshHotkeys();
+    }
+
+    /// <summary>
+    /// La scelta del tasto si annulla senza toccare il primo piano: la finestra è stata lasciata, nascosta o chiusa.
+    /// Senza, i tasti rapidi restavano liberati (anche dentro i giochi) finché non si tornava nelle Opzioni.
+    /// </summary>
+    private void CancelCapture()
+    {
+        if (_capturing == 0) return;
+        _capturing = 0;
+        RegisterHotkey();
     }
 
     /// <summary>Fine della scelta del tasto: i tasti salvati si registrano di nuovo.</summary>
@@ -1405,7 +1642,10 @@ public partial class MainWindow : Window
         _driverBusy = true;
         DriverButton.IsEnabled = false;
         SetDriverMessage(() => Loc.T("Driver.Working"));
-        LocText? error = await Task.Run(SensorDriver.InstallOrRepair);
+        LocText? error;
+        // async void: un errore qui farebbe cadere l'app intera
+        try { error = await Task.Run(SensorDriver.InstallOrRepair); }
+        catch (Exception ex) { LogError("Driver", ex); error = new LocText("Sensors.Unavailable", ex.Message); }
         _driverBusy = false;
         DriverButton.IsEnabled = true;
         if (error == null)
@@ -2037,6 +2277,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        CancelCapture();   // prima di nascondersi nell'area di notifica i tasti rapidi devono tornare
         StorePanels();
         if (!_exiting)
         {

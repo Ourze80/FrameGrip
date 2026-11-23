@@ -19,6 +19,10 @@ public sealed class FrameStats
 {
     private const int Cap = 8192;
     private const double WindowMs = 10_000;
+    /// <summary>Da qui in su l'intervallo tra due frame è uno scatto vero, che però non entra nella stima del ritmo.</summary>
+    public const double HitchMs = 1000;
+    /// <summary>Da qui in su il gioco non stava presentando frame (pausa, caricamento, alt-tab): l'intervallo non conta.</summary>
+    public const double PauseMs = 5000;
 
     private readonly double[] _ts = new double[Cap];
     private readonly float[] _ft = new float[Cap];
@@ -68,6 +72,26 @@ public sealed class FrameStats
     public void EndMeasure()
     {
         lock (_lock) _measure = null;
+    }
+
+    /// <summary>Vero mentre un benchmark o una misura del limite ideale stanno usando questi frame: non va buttato.</summary>
+    public bool InUse
+    {
+        get { lock (_lock) return _recording != null || _measure != null; }
+    }
+
+    /// <summary>
+    /// L'orologio dei frame ricomincia (per esempio la sessione ETW è ripartita): il prossimo frame non ha un
+    /// intervallo valido rispetto all'ultimo visto, e la differenza tra gli orologi va ricalcolata.
+    /// </summary>
+    public void Discontinuity()
+    {
+        lock (_lock)
+        {
+            _lastRawTs = -1;
+            _burstCount = 0;
+            _clockOffset = double.NaN;
+        }
     }
 
     /// <summary>Quanti intervalli sono stati scritti nel buffer della misura (si leggono solo quelli prima di questo indice).</summary>
@@ -141,10 +165,18 @@ public sealed class FrameStats
             _lastRawTs = tsMs;
             if (_measure != null && _measureCount < _measure.Length) { _measure[_measureCount] = (float)dt; Volatile.Write(ref _measureCount, _measureCount + 1); }
 
-            if (dt >= 1000)
+            if (dt >= PauseMs)
             {
-                // Pausa lunga (caricamento, alt-tab): non è un fotogramma e interrompe la raffica in corso.
+                // Pausa vera (caricamento, alt-tab, gioco ridotto a icona): non è un fotogramma e interrompe la raffica in corso.
                 _burstCount = 0;
+                return;
+            }
+            if (dt >= HitchMs)
+            {
+                // Scatto lungo (1-5 s): il gioco si è bloccato davvero, quindi conta (1%/0,1% low, stutter, benchmark).
+                // Interrompe la raffica della frame generation ma non entra nella stima del ritmo.
+                _burstCount = 0;
+                Emit(tsMs, dt);
                 return;
             }
 
@@ -220,61 +252,66 @@ public sealed class FrameStats
     /// <param name="wallMs">"Adesso" nell'orologio di WallMs; separato solo per le prove.</param>
     public FrameSnapshot? Snapshot(double wallMs)
     {
-        List<float> frames; // dal più recente al più vecchio
-        int n1s = 0;
-        double sum1s = 0;
-        float[] graph, graphX;
-
-        lock (_lock)
+        // Frame della finestra, dal più recente al più vecchio, in un buffer preso in prestito (chiamata frequente:
+        // niente allocazioni grandi a ogni aggiornamento). Restano nuovi solo i due array del grafico, che chi
+        // riceve lo snapshot tiene.
+        float[] frames = System.Buffers.ArrayPool<float>.Shared.Rent(Cap);
+        try
         {
-            if (_count < 2 || Environment.TickCount64 - _lastWallMs > 1500) return null;
-            (graph, graphX) = GraphPoints(wallMs);
-            frames = new List<float>(Math.Min(_count, 4096));
-            double newest = _lastTs;
-            for (int k = 0; k < _count; k++)
+            int n = 0, n1s = 0;
+            double sum1s = 0;
+            float[] graph, graphX;
+
+            lock (_lock)
             {
-                int idx = ((_head - 1 - k) % Cap + Cap) % Cap;
-                double age = newest - _ts[idx];
-                if (age > WindowMs) break;
-                float ft = _ft[idx];
-                frames.Add(ft);
-                if (age <= 1000) { n1s++; sum1s += ft; }
+                if (_count < 2 || Environment.TickCount64 - _lastWallMs > 1500) return null;
+                (graph, graphX) = GraphPoints(wallMs);
+                double newest = _lastTs;
+                for (int k = 0; k < _count; k++)
+                {
+                    int idx = ((_head - 1 - k) % Cap + Cap) % Cap;
+                    double age = newest - _ts[idx];
+                    if (age > WindowMs) break;
+                    float ft = _ft[idx];
+                    frames[n++] = ft;
+                    if (age <= 1000) { n1s++; sum1s += ft; }
+                }
             }
+
+            if (n < 2 || n1s == 0) return null;
+
+            double sum = 0, jitterSum = 0;
+            for (int i = 0; i < n; i++)
+            {
+                sum += frames[i];
+                if (i > 0) jitterSum += Math.Abs(frames[i] - frames[i - 1]);
+            }
+            double mean = sum / n;
+            double jitter = jitterSum / (n - 1);
+
+            var sorted = frames;
+            Array.Sort(sorted, 0, n); // crescente: i peggiori sono in fondo
+            double median = sorted[n / 2];
+            double p99 = sorted[Math.Min(n - 1, (int)(n * 0.99))];
+
+            int stutters = 0;
+            double stutterLimit = Math.Max(median * 2, median + 4);
+            for (int i = n - 1; i >= 0 && sorted[i] > stutterLimit; i--) stutters++;
+
+            return new FrameSnapshot(
+                Fps: 1000.0 * n1s / sum1s,
+                AvgFps: 1000.0 / mean,
+                Low1Fps: 1000.0 / WorstMean(sorted, n, 0.01),
+                Low01Fps: 1000.0 / WorstMean(sorted, n, 0.001),
+                FrametimeMs: sum1s / n1s,
+                P99Ms: p99,
+                JitterMs: jitter,
+                Stutters: stutters,
+                PacingPct: Math.Clamp(100.0 * (1.0 - jitter / mean), 0, 100),
+                Graph: graph,
+                GraphX: graphX);
         }
-
-        int n = frames.Count;
-        if (n < 2 || n1s == 0) return null;
-
-        double sum = 0, jitterSum = 0;
-        for (int i = 0; i < n; i++)
-        {
-            sum += frames[i];
-            if (i > 0) jitterSum += Math.Abs(frames[i] - frames[i - 1]);
-        }
-        double mean = sum / n;
-        double jitter = jitterSum / (n - 1);
-
-        var sorted = frames.ToArray();
-        Array.Sort(sorted); // crescente: i peggiori sono in fondo
-        double median = sorted[n / 2];
-        double p99 = sorted[Math.Min(n - 1, (int)(n * 0.99))];
-
-        int stutters = 0;
-        double stutterLimit = Math.Max(median * 2, median + 4);
-        for (int i = n - 1; i >= 0 && sorted[i] > stutterLimit; i--) stutters++;
-
-        return new FrameSnapshot(
-            Fps: 1000.0 * n1s / sum1s,
-            AvgFps: 1000.0 / mean,
-            Low1Fps: 1000.0 / WorstMean(sorted, 0.01),
-            Low01Fps: 1000.0 / WorstMean(sorted, 0.001),
-            FrametimeMs: sum1s / n1s,
-            P99Ms: p99,
-            JitterMs: jitter,
-            Stutters: stutters,
-            PacingPct: Math.Clamp(100.0 * (1.0 - jitter / mean), 0, 100),
-            Graph: graph,
-            GraphX: graphX);
+        finally { System.Buffers.ArrayPool<float>.Shared.Return(frames); }
     }
 
     /// <summary>
@@ -337,9 +374,9 @@ public sealed class FrameStats
     /// <summary>Posizione nel buffer del k-esimo frame più recente (0 = l'ultimo).</summary>
     private int Index(int k) => ((_head - 1 - k) % Cap + Cap) % Cap;
 
-    private static double WorstMean(float[] sortedAsc, double fraction)
+    /// <param name="n">Quanti valori validi ci sono all'inizio dell'array (può essere più lungo: buffer in prestito).</param>
+    private static double WorstMean(float[] sortedAsc, int n, double fraction)
     {
-        int n = sortedAsc.Length;
         int take = Math.Max(1, (int)Math.Ceiling(n * fraction));
         double s = 0;
         for (int i = n - take; i < n; i++) s += sortedAsc[i];

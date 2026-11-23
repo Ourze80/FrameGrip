@@ -34,13 +34,20 @@ public partial class OptionsPage : UserControl
             ColorPopup.IsOpen = false;
             if (IsVisible && _settings != null) { ReadAutostart(); ReadDisplay(); }   // lo stato vero si rilegge a ogni apertura
         };
+        // Loaded arriva a ogni ritorno nella finestra: ci si attacca una volta sola (prima si aggiungeva un gestore ogni volta)
         Loaded += (_, _) =>
         {
-            if (Window.GetWindow(this) is not { } w) return;
-            w.Deactivated += (_, _) => ColorPopup.IsOpen = false;
-            w.LocationChanged += (_, _) => ColorPopup.IsOpen = false;
+            if (Window.GetWindow(this) is not { } w || w == _hostWindow) return;
+            if (_hostWindow != null) { _hostWindow.Deactivated -= HostLeft; _hostWindow.LocationChanged -= HostLeft; }
+            _hostWindow = w;
+            w.Deactivated += HostLeft;
+            w.LocationChanged += HostLeft;
         };
     }
+
+    private Window? _hostWindow;
+
+    private void HostLeft(object? sender, EventArgs e) => ColorPopup.IsOpen = false;
 
     /// <summary>Collega la pagina alle impostazioni: una volta sola, all'avvio della finestra principale.</summary>
     public void Attach(Settings settings)
@@ -192,24 +199,33 @@ public partial class OptionsPage : UserControl
     // ------------------------------------------------------------ avvio con Windows
 
     /// <summary>Lo stato vero si rilegge a ogni apertura: l'attività pianificata può cambiare anche da fuori.</summary>
+    // async void: un errore qui farebbe cadere l'app intera; si scrive nel diario e l'interruttore torna usabile
     private async void ReadAutostart()
     {
         AutostartToggle.IsEnabled = false;
-        bool on = await Task.Run(Autostart.IsEnabled);
-        AutostartToggle.IsChecked = on;
-        AutostartToggle.IsEnabled = true;
+        try
+        {
+            bool on = await Task.Run(Autostart.IsEnabled);
+            AutostartToggle.IsChecked = on;
+        }
+        catch (Exception ex) { MainWindow.LogError("Autostart", ex); }
+        finally { AutostartToggle.IsEnabled = true; }
     }
 
     private async void Autostart_Click(object sender, RoutedEventArgs e)
     {
         bool want = AutostartToggle.IsChecked == true;
         AutostartToggle.IsEnabled = false;
-        LocText? error = await Task.Run(() => Autostart.Set(want));
-        bool now = await Task.Run(Autostart.IsEnabled);
-        AutostartToggle.IsChecked = now;
-        AutostartToggle.IsEnabled = true;
-        _autostartError = error;
-        ShowAutostartError();
+        try
+        {
+            LocText? error = await Task.Run(() => Autostart.Set(want));
+            bool now = await Task.Run(Autostart.IsEnabled);
+            AutostartToggle.IsChecked = now;
+            _autostartError = error;
+            ShowAutostartError();
+        }
+        catch (Exception ex) { MainWindow.LogError("Autostart", ex); }
+        finally { AutostartToggle.IsEnabled = true; }
     }
 
     private void ShowAutostartError()

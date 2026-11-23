@@ -140,8 +140,12 @@ public sealed class GamesPage : Grid
         box.Loaded += async (_, _) =>
         {
             if (img.Source != null) return;
-            var src = await GameCatalog.CoverAsync(g);
-            if (src != null) { img.Source = src; fallback.Visibility = Visibility.Collapsed; }
+            try
+            {
+                var src = await GameCatalog.CoverAsync(g);
+                if (src != null) { img.Source = src; fallback.Visibility = Visibility.Collapsed; }
+            }
+            catch (Exception ex) { MainWindow.LogError("Cover", ex); }   // async void: resta la copertina disegnata
         };
         if (radius > 0)
             box.SizeChanged += (_, e) => box.Clip = new RectangleGeometry(new Rect(0, 0, e.NewSize.Width, e.NewSize.Height + radius), radius, radius);
@@ -172,7 +176,8 @@ public sealed class GamesPage : Grid
         {
             var again = _items.FirstOrDefault(i => string.Equals(i.Key, _detailItem.Key, StringComparison.OrdinalIgnoreCase))
                 ?? _items.FirstOrDefault(i => i.Exes.Overlaps(_detailItem.Exes));
-            if (again != null) { _detailItem = again; Detail.SetContext(again); }
+            // stesso gioco: la pagina si aggiorna senza ricostruirsi (il cursore del limite non si rifà sotto il mouse)
+            if (again != null) { _detailItem = again; Detail.UpdateContext(again); }
         }
     }
 
@@ -186,7 +191,8 @@ public sealed class GamesPage : Grid
             bool gameChanged = _sig.Split('|')[0] != (g?.Exe ?? "");
             _sig = sig;
             Rebuild();
-            BuildHome();
+            // con la pagina di un gioco aperta l'elenco non si vede: si rifà tornando all'elenco (ShowHome)
+            if (_detailItem == null) BuildHome();
             if (_detailItem != null && gameChanged) BuildDetailHead();
         }
         UpdateHero();

@@ -5,8 +5,10 @@ namespace FrameGrip.Core;
 public enum IdealState { Idle, Setup, LimiterNotice, NoGame, Countdown, Measuring, Analyzing, Result, TooShort, GameClosed }
 
 /// <summary>Il gioco agganciato visto dall'app: serve alla misura e ai profili.</summary>
+/// <param name="RefreshHz">Frequenza intera, per le scritte.</param>
+/// <param name="RefreshRate">Frequenza esatta (59,94...), per i calcoli; 0 = non nota, la si cerca dalla finestra del gioco.</param>
 public sealed record GameInfo(int Pid, string Exe, string Name, int RefreshHz, WindowMode Mode, FrameStats? Stats, int FgDetected,
-    string? Path = null, string? Store = null, string? AppId = null);
+    string? Path = null, string? Store = null, string? AppId = null, double RefreshRate = 0);
 
 /// <summary>
 /// La misura del "limite ideale": preparazione, conto alla rovescia, raccolta dei frame, analisi, risultato.
@@ -251,12 +253,32 @@ public sealed class IdealMeasure
         }
     }
 
+    /// <summary>
+    /// La frequenza esatta dello schermo del gioco (59,94 Hz → il limite consigliato è 59, non 60). Si usa solo se
+    /// è vicina a quella intera che vede l'interfaccia (stesso schermo); altrimenti quella intera.
+    /// </summary>
+    private static double ExactRefresh(GameInfo? g)
+    {
+        if (g == null) return 0;
+        double exact = g.RefreshRate;
+        if (exact <= 0)
+        {
+            try
+            {
+                using var p = Process.GetProcessById(g.Pid);
+                if (p.MainWindowHandle != IntPtr.Zero) exact = DisplayInfo.RefreshRate(p.MainWindowHandle);
+            }
+            catch { /* gioco chiuso: vale quella intera */ }
+        }
+        return exact > 0 && (g.RefreshHz <= 0 || Math.Abs(exact - g.RefreshHz) < 1.5) ? exact : g.RefreshHz;
+    }
+
     private void Analyze(bool sound)
     {
         Set(IdealState.Analyzing);
         var input = new IdealInput
         {
-            Raw = _buffer!, Count = _processed, RefreshHz = Game?.RefreshHz ?? 0, Vrr = Vrr, FgMultiplier = FgMultiplier,
+            Raw = _buffer!, Count = _processed, RefreshHz = ExactRefresh(Game), Vrr = Vrr, FgMultiplier = FgMultiplier,
             Samples = _samples.Take(_sampleCount).ToArray(), MinCleanSec = MinCleanSec, MinFrames = MinFrames,
         };
         var ctx = SynchronizationContext.Current;

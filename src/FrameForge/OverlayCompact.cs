@@ -21,8 +21,13 @@ public sealed partial class OverlayView
     /// <summary>Solo per le prove: lo schermo da usare per i limiti di grandezza del pannello al posto di quello vero.</summary>
     internal static Size? ScreenOverride;
 
-    private static double ScreenW => ScreenOverride?.Width ?? SystemParameters.PrimaryScreenWidth;
-    private static double ScreenH => ScreenOverride?.Height ?? SystemParameters.PrimaryScreenHeight;
+    // Lo schermo del gioco, se non è il principale (in unità WPF). Lo scrive la finestra principale e lo legge anche
+    // il thread che disegna l'immagine per il gioco: un oggetto intero, così non si legge mai a metà.
+    private static volatile object? _gameScreen;
+    internal static Size? GameScreen { get => _gameScreen as Size?; set => _gameScreen = value; }
+
+    private static double ScreenW => ScreenOverride?.Width ?? GameScreen?.Width ?? SystemParameters.PrimaryScreenWidth;
+    private static double ScreenH => ScreenOverride?.Height ?? GameScreen?.Height ?? SystemParameters.PrimaryScreenHeight;
 
     // ------------------------------------------------------------ righe mostrate dagli stili compatti
 

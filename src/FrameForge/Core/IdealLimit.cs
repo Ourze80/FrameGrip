@@ -441,6 +441,8 @@ public static class IdealLimit
         Check("snap 140 -> 144", Snap(140, 144) == 144, Snap(140, 144).ToString());
         Check("snap 79 -> 82 (165/2)", Snap(79, 165) == 82, Snap(79, 165).ToString());
         Check("snap 100 stays", Snap(100, 144) == 100, Snap(100, 144).ToString());
+        Check("snap 60 at 59.94 Hz -> 59 (never above the screen)", Snap(60, 59.94) == 59, Snap(60, 59.94).ToString());
+        Check("snap 59 at 59.94 Hz stays 59 (not 58)", Snap(59, 59.94, 59) == 59, Snap(59, 59.94, 59).ToString());
 
         sb.AppendLine(allOk ? "ALL PASS" : "SOME FAILED");
         File.WriteAllText(file, sb.ToString());

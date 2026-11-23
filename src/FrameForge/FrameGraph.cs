@@ -24,12 +24,39 @@ public sealed class FrameGraph : FrameworkElement
 
     public FrameGraph()
     {
-        Theming.Changed += InvalidateVisual;
-        Unloaded += (_, _) => Theming.Changed -= InvalidateVisual;
-        Loaded += (_, _) => { Theming.Changed -= InvalidateVisual; Theming.Changed += InvalidateVisual; };
+        // Ci si iscrive solo quando il grafico è nella finestra: un grafico creato e mai mostrato restava iscritto per sempre.
+        Loaded += (_, _) => { Theming.Changed -= OnThemeChanged; Theming.Changed += OnThemeChanged; };
+        Unloaded += (_, _) => Theming.Changed -= OnThemeChanged;
+    }
+
+    private void OnThemeChanged()
+    {
+        _pens.Clear();
+        _texts.Clear();
+        InvalidateVisual();
     }
 
     private Brush Res(string key, Brush fallback) => TryFindResource(key) as Brush ?? fallback;
+
+    // Penne, caratteri e scritte si tengono tra un disegno e l'altro: durante la misura il grafico si ridisegna
+    // a ogni passo e prima rifaceva tutto ogni volta. Le penne dipendono dal pennello: se il tema cambia, si rifanno.
+    private static readonly Typeface Small = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+    private static readonly Typeface SmallBold = new(Small.FontFamily, FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+    private static readonly DashStyle CapDash = Frozen(new DashStyle(new double[] { 3, 2.5 }, 0));
+    private readonly Dictionary<(Brush, double, bool), Pen> _pens = new();
+    private readonly Dictionary<(string, double, bool, Brush, double), FormattedText> _texts = new();
+
+    private static T Frozen<T>(T f) where T : Freezable { f.Freeze(); return f; }
+
+    private Pen PenOf(Brush brush, double width, bool dashed = false)
+    {
+        if (_pens.TryGetValue((brush, width, dashed), out var pen)) return pen;
+        if (_pens.Count > 32) _pens.Clear();
+        pen = new Pen(brush, width) { LineJoin = PenLineJoin.Round };
+        if (dashed) pen.DashStyle = CapDash;
+        pen.Freeze();
+        return _pens[(brush, width, dashed)] = pen;
+    }
 
     protected override void OnRender(DrawingContext dc)
     {
@@ -43,7 +70,7 @@ public sealed class FrameGraph : FrameworkElement
         var danger = Res("Danger", Brushes.Red);
         double ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
-        dc.DrawRoundedRectangle(panel, new Pen(line, 1), new Rect(0.5, 0.5, w - 1, h - 1), 10, 10);
+        dc.DrawRoundedRectangle(panel, PenOf(line, 1), new Rect(0.5, 0.5, w - 1, h - 1), 10, 10);
         const double L = 30, R = 8, T = 22, B = 18;
         var plot = new Rect(L, T, Math.Max(10, w - L - R), Math.Max(10, h - T - B));
 
@@ -61,11 +88,14 @@ public sealed class FrameGraph : FrameworkElement
         if (yMax - yMin < 2) yMax = yMin + 2;
         double Y(double v) => plot.Bottom - (Math.Clamp(v, yMin, yMax) - yMin) / (yMax - yMin) * plot.Height;
 
-        var gridPen = new Pen(line, 1);
-        var small = new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
-        FormattedText Text(string s, double size, Brush b, bool bold = false) =>
-            new(s, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-                bold ? new Typeface(small.FontFamily, FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal) : small, size, b, ppd);
+        var gridPen = PenOf(line, 1);
+        FormattedText Text(string s, double size, Brush b, bool bold = false)
+        {
+            var key = (s, size, bold, b, ppd);
+            if (_texts.TryGetValue(key, out var t)) return t;
+            if (_texts.Count > 64) _texts.Clear();   // per esempio "171 FPS" in alto a destra cambia di continuo
+            return _texts[key] = new(s, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, bold ? SmallBold : Small, size, b, ppd);
+        }
         for (int k = 0; k <= 2; k++)
         {
             double v = yMin + (yMax - yMin) * k / 2, y = Math.Round(Y(v)) + 0.5;
@@ -102,12 +132,12 @@ public sealed class FrameGraph : FrameworkElement
                 }
             }
             geo.Freeze();
-            dc.DrawGeometry(null, new Pen(s.Brush, 1.3) { LineJoin = PenLineJoin.Round }, geo);
+            dc.DrawGeometry(null, PenOf(s.Brush, 1.3), geo);
         }
         if (CapMs > 0)
         {
             double y = Math.Round(Y(CapMs)) + 0.5;
-            dc.DrawLine(new Pen(warn, 1.2) { DashStyle = new DashStyle(new double[] { 3, 2.5 }, 0) }, new Point(plot.Left, y), new Point(plot.Right, y));
+            dc.DrawLine(PenOf(warn, 1.2, dashed: true), new Point(plot.Left, y), new Point(plot.Right, y));
         }
         dc.Pop();
         if (Marks != null)

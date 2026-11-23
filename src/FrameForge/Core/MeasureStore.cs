@@ -30,24 +30,29 @@ public sealed class SavedMeasure
 }
 
 /// <summary>Le misure salvate, in un file a parte nella cartella delle impostazioni (non nel file delle impostazioni,
-/// che l'app riscrive spesso).</summary>
+/// che l'app riscrive spesso). Thread-safe: All restituisce una copia, le modifiche passano da Gate.</summary>
 public static class MeasureStore
 {
+    private static readonly object Gate = new();
     private static List<SavedMeasure>? _all;
 
     private static string FilePath =>
         Environment.GetEnvironmentVariable("FRAMEGRIP_MEASURES") is { Length: > 0 } custom ? custom
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FrameGrip", "measures.json");
 
+    /// <summary>L'elenco caricato (da chiamare sotto Gate). Un file rovinato si tiene da parte e si prova il .bak.</summary>
+    private static List<SavedMeasure> Loaded()
+    {
+        if (_all != null) return _all;
+        try { _all = SafeFile.Read(FilePath, json => JsonSerializer.Deserialize<List<SavedMeasure>>(json), "Measures"); }
+        catch (Exception ex) { AppLog.Write("Measures: " + ex.Message); }
+        return _all ??= new List<SavedMeasure>();
+    }
+
+    /// <summary>Copia dell'elenco: si può scorrere mentre un altro thread aggiunge o toglie misure.</summary>
     public static List<SavedMeasure> All
     {
-        get
-        {
-            if (_all != null) return _all;
-            try { _all = File.Exists(FilePath) ? JsonSerializer.Deserialize<List<SavedMeasure>>(File.ReadAllText(FilePath)) : null; }
-            catch (Exception ex) { AppLog.Write("Measures: " + ex.Message); }
-            return _all ??= new List<SavedMeasure>();
-        }
+        get { lock (Gate) return new List<SavedMeasure>(Loaded()); }
     }
 
     public static List<SavedMeasure> ForGame(string exe) =>
@@ -57,18 +62,18 @@ public static class MeasureStore
     public static List<SavedMeasure> ForKeys(ICollection<string> exes) =>
         All.Where(m => exes.Contains(m.Exe, StringComparer.OrdinalIgnoreCase)).OrderByDescending(m => m.Date).ToList();
 
-    public static void Add(SavedMeasure m) { All.Add(m); Save(); }
+    public static void Add(SavedMeasure m) { lock (Gate) Loaded().Add(m); Save(); }
 
-    public static void Remove(SavedMeasure m) { All.Remove(m); Save(); }
+    public static void Remove(SavedMeasure m) { lock (Gate) Loaded().Remove(m); Save(); }
 
     public static void Save()
     {
-        try
+        lock (Gate)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(All));
+            // .tmp, scrittura forzata su disco e scambio (la versione di prima resta come .bak)
+            try { SafeFile.WriteAllText(FilePath, JsonSerializer.Serialize(Loaded())); }
+            catch (Exception ex) { AppLog.Write("Measures: " + ex.Message); }
         }
-        catch (Exception ex) { AppLog.Write("Measures: " + ex.Message); }
     }
 
     public static SavedMeasure From(IdealResult r, string exe, string game, string name) => new()

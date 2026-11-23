@@ -1,4 +1,5 @@
 ﻿using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 
 namespace FrameGrip;
@@ -11,8 +12,48 @@ public partial class App : Application
     private static Mutex? _mutex;
     private static EventWaitHandle? _showEvent;
 
+    // Errori imprevisti dell'interfaccia: si registrano e l'app continua, ma se si ripetono a raffica
+    // (più di MaxCrashes in un minuto) c'è un problema che non passa, e si lascia chiudere l'app.
+    private const int MaxCrashes = 5;
+    private readonly Queue<long> _crashTimes = new();
+
+    private void InstallCrashHandlers()
+    {
+        DispatcherUnhandledException += (_, ev) =>
+        {
+            Core.AppLog.Write("Crash (UI): " + ev.Exception);
+            long now = Environment.TickCount64;
+            lock (_crashTimes)
+            {
+                _crashTimes.Enqueue(now);
+                while (_crashTimes.Count > 0 && now - _crashTimes.Peek() > 60_000) _crashTimes.Dequeue();
+                if (_crashTimes.Count > MaxCrashes)
+                {
+                    Core.AppLog.Write($"Crash (UI): more than {MaxCrashes} errors in a minute, closing");
+                    Core.EmergencyCleanup.DisposeAll();
+                    return;   // non gestito: l'app si chiude
+                }
+            }
+            ev.Handled = true;
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, ev) =>
+        {
+            Core.AppLog.Write($"Crash (fatal{(ev.IsTerminating ? "" : ", not terminating")}): {ev.ExceptionObject}");
+            // L'app sta per chiudersi: la sessione ETW e il limitatore nei giochi non devono restare attivi.
+            Core.EmergencyCleanup.DisposeAll();
+        };
+        TaskScheduler.UnobservedTaskException += (_, ev) =>
+        {
+            Core.AppLog.Write("Crash (background task): " + ev.Exception);
+            ev.SetObserved();
+        };
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        InstallCrashHandlers();
+        // Avviata dall'attività pianificata (avvio automatico) l'app nasce a priorità bassa: si torna alla normale.
+        if (Native.RestoreNormalPriority() is { } priority) Core.AppLog.Write("Priority: " + priority);
         // Una sola copia alla volta: due copie si contendono il layer Vulkan e i tasti rapidi.
         // Le prove automatiche (FRAMEGRIP_SETTINGS) possono affiancarsi alla copia dell'utente.
         bool testRun = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FRAMEGRIP_SETTINGS"));

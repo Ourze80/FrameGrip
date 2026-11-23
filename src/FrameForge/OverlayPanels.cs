@@ -65,7 +65,7 @@ public sealed partial class OverlayView
         if (dc == null) return size;
 
         double top = P;
-        if (titleH > 0) { TitleLine(dc, P + 2, top, size.Width - 2 * P); top += titleH; }
+        if (titleH > 0) { TitleLine(dc, P + 6, top, size.Width - 2 * P); top += titleH; }
         foreach (var b in _panelBlocks)
         {
             double x = P + b.Col * (colW + ColGap), by = top + b.Y;

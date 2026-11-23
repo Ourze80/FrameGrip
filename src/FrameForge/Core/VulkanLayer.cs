@@ -20,8 +20,13 @@ public static class VulkanLayer
     private static string ManifestPath(string bits) => Path.Combine(ManifestDir, $"FrameGripVulkan{bits}.json");
 
     /// <summary>Null se riuscito, altrimenti l'errore (tradotto quando lo si mostra).</summary>
+    // Le istanze di prova (impostazioni di prova) non toccano il layer: chiudendosi lo toglierebbero
+    // anche all'app vera dell'utente, che usa la stessa voce di registro.
+    private static bool TestRun => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FRAMEGRIP_SETTINGS"));
+
     public static LocText? Register()
     {
+        if (TestRun) return null;
         try
         {
             Directory.CreateDirectory(ManifestDir);
@@ -63,6 +68,7 @@ public static class VulkanLayer
 
     public static void Unregister()
     {
+        if (TestRun) return;
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(KeyPath, writable: true);

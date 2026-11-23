@@ -30,22 +30,42 @@ public partial class ColorPicker : UserControl
     /// <summary>Si è premuto "Done": chi ospita il selettore chiude il suo Popup.</summary>
     public event Action? Done;
 
+    // I cursori HSV cambiano il colore a ogni passo: applicarlo ogni volta (per il colore dell'app vuol dire
+    // ridipingere tutta l'interfaccia) bloccava il trascinamento. Si applica al massimo ogni 60 ms, e l'ultimo
+    // valore sempre (anche chiudendo il selettore subito dopo).
+    private readonly System.Windows.Threading.DispatcherTimer _hsvTimer = new() { Interval = TimeSpan.FromMilliseconds(60) };
+    private string? _pendingHex;
+
     public ColorPicker()
     {
         InitializeComponent();
         BuildPalette();
+        _hsvTimer.Tick += (_, _) => FlushHsv();
+    }
+
+    private void FlushHsv()
+    {
+        _hsvTimer.Stop();
+        string? hex = _pendingHex;
+        _pendingHex = null;
+        if (hex != null) _apply?.Invoke(hex);
     }
 
     /// <summary>Prepara il selettore per un nuovo bersaglio, senza che questo conti come una scelta.</summary>
     public void Begin(ApplyColor apply, string text, Color current)
     {
+        FlushHsv();   // l'ultimo colore va a chi lo stava scegliendo, non al nuovo bersaglio
         _apply = apply;
         HexBox.Text = text;
         SyncHsvSliders(current);
     }
 
     /// <summary>Il selettore non sceglie più per nessuno (il Popup si è chiuso).</summary>
-    public void End() => _apply = null;
+    public void End()
+    {
+        FlushHsv();
+        _apply = null;
+    }
 
     private void BuildPalette()
     {
@@ -88,17 +108,24 @@ public partial class ColorPicker : UserControl
             : h < 240 ? (0.0, x, c) : h < 300 ? (x, 0.0, c) : (c, 0.0, x);
         string hex = $"#{(int)Math.Round((r + m) * 255):X2}{(int)Math.Round((g + m) * 255):X2}{(int)Math.Round((b + m) * 255):X2}";
         HexBox.Text = hex;
-        _apply(hex);
+        _pendingHex = hex;
+        if (!_hsvTimer.IsEnabled) _hsvTimer.Start();
     }
 
     private void ColorAuto_Click(object sender, RoutedEventArgs e) => PickColor(null);
 
-    private void ColorDone_Click(object sender, RoutedEventArgs e) => Done?.Invoke();
+    private void ColorDone_Click(object sender, RoutedEventArgs e)
+    {
+        FlushHsv();
+        Done?.Invoke();
+    }
 
     /// <summary>Applica un colore lasciando aperto il selettore: si chiude solo con "Done", così se ne provano diversi.</summary>
     private void PickColor(string? hex)
     {
         if (_apply == null) return;
+        _pendingHex = null;   // una scelta esplicita vince sul passo del cursore non ancora applicato
+        _hsvTimer.Stop();
         var (text, color) = _apply(hex);
         HexBox.Text = text;
         if (color is { } c) SyncHsvSliders(c);

@@ -1,5 +1,6 @@
 // ff_testgame: finto gioco DirectX 11 per provare l'aggancio e il limitatore.
-// Disegna a FPS liberi un colore che cambia. Uso: ff_testgame [secondi] [activate] [off] [hdr16 | hdr10 | srgb] [dump]
+// Disegna a FPS liberi un colore che cambia. Uso: ff_testgame [secondi] [activate] [off] [hdr16 | hdr10 | srgb] [dump] [fg2]
+//   fg2: finta frame generation x2 (fotogramma vero ogni ~18 ms + uno "generato" 0,3 ms dopo)
 //   hdr16 / hdr10 / dump: come in ff_testgame12 (dump in %TEMP%\ff_dump_d3d11.bin); srgb: back buffer sRGB
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -27,7 +28,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
     wc.lpszClassName = L"FrameGripTestGame";
     RegisterClassExW(&wc);
     // "off": finestra fuori dallo schermo, visibile ma senza fuoco (le prove non disturbano chi usa il PC).
-    bool offscreen = cmd && wcsstr(cmd, L"off");
+    bool offscreen = TestOffscreen(cmd);
     HWND hwnd = CreateWindowExW(offscreen ? WS_EX_TOOLWINDOW : 0, wc.lpszClassName, L"FrameGrip Test Game", WS_OVERLAPPEDWINDOW,
         offscreen ? -3000 : 120, offscreen ? 100 : 120, offscreen ? 700 : 640, offscreen ? 800 : 360, nullptr, nullptr, inst, nullptr);
     // "ff_testgame 30 activate" porta la finestra in primo piano, come un gioco vero.
@@ -81,6 +82,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
     }
 
     ULONGLONG start = GetTickCount64();
+    bool fg2 = cmd && wcsstr(cmd, L"fg2");   // finta frame generation x2 (vedi sotto)
+    LARGE_INTEGER fgFreq, fgLast;
+    QueryPerformanceFrequency(&fgFreq);
+    QueryPerformanceCounter(&fgLast);
     MSG msg = {};
     bool running = true;
     while (running)
@@ -105,6 +110,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
         if (dump) color[0] = color[1] = color[2] = 0.0f;   // fondo nero: valori attesi esatti
         ctx->OMSetRenderTargets(1, &rtv, nullptr);
         ctx->ClearRenderTargetView(rtv, color);
+        if (fg2)
+        {
+            // Finta frame generation x2: ~18 ms di "lavoro" per il fotogramma vero, poi il vero e quello
+            // generato consegnati a raffica (~0,3 ms l'uno dall'altro), come fa DLSS FG.
+            LARGE_INTEGER now;
+            do { QueryPerformanceCounter(&now); YieldProcessor(); } while ((now.QuadPart - fgLast.QuadPart) * 1000.0 / fgFreq.QuadPart < 18.0);
+            fgLast = now;
+            sc->Present(0, 0);
+            LARGE_INTEGER a, b;
+            QueryPerformanceCounter(&a);
+            do { QueryPerformanceCounter(&b); YieldProcessor(); } while ((b.QuadPart - a.QuadPart) * 1000.0 / fgFreq.QuadPart < 0.3);
+            ctx->ClearRenderTargetView(rtv, color);
+        }
         sc->Present(0, 0);
 
         if (dump && !dumped && t > seconds - 1.5)

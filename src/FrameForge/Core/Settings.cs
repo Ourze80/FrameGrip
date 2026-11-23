@@ -360,14 +360,14 @@ public sealed class Settings : INotifyPropertyChanged, IJsonOnDeserializing, IJs
                 Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
                 File.Copy(old, FilePath);
             }
-            fresh = !File.Exists(FilePath);
-            s = File.Exists(FilePath)
-                ? JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)) ?? new Settings()
-                : new Settings();
+            fresh = !File.Exists(FilePath) && !File.Exists(FilePath + ".bak");
+            // File rovinato: se ne tiene una copia, si prova il .bak, altrimenti si riparte dai valori predefiniti.
+            s = SafeFile.Read(FilePath, json => JsonSerializer.Deserialize<Settings>(json), "Settings") ?? new Settings();
         }
-        catch
+        catch (Exception ex)
         {
-            s = new Settings(); // file corrotto: si riparte dai valori predefiniti
+            AppLog.Write("Settings: " + ex.Message);
+            s = new Settings();
         }
 
         if (fresh) s.GuideDone = false;   // prima apertura in assoluto: si mostra la guida
@@ -447,12 +447,9 @@ public sealed class Settings : INotifyPropertyChanged, IJsonOnDeserializing, IJs
         {
             if (order < _lastOrder) return;
             _lastOrder = order == long.MaxValue ? _lastOrder : order;
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-                File.WriteAllText(FilePath, json);
-            }
-            catch { /* il salvataggio non deve mai far cadere l'app */ }
+            // .tmp, scrittura forzata su disco e scambio: un'interruzione (crash, corrente) non lascia mai un file a metà
+            try { SafeFile.WriteAllText(FilePath, json); }
+            catch (Exception ex) { AppLog.Write("Settings save: " + ex.Message); }   // il salvataggio non deve mai far cadere l'app
         }
     }
 

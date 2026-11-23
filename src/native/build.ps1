@@ -1,7 +1,10 @@
 ﻿# Compila la parte nativa a 64 e a 32 bit: DLL di aggancio, iniettore e giochi di prova.
-# Richiede i Build Tools C++ di Visual Studio. Uso: .\build.ps1
+# Richiede i Build Tools C++ di Visual Studio. Uso: .\build.ps1 [-OutRoot <cartella>]
+# Senza -OutRoot i file vanno in bin\ e obj\ accanto a questo script.
+param([string]$OutRoot = '')
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
+if (-not $OutRoot) { $OutRoot = $here }
 
 $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
 $vswhere = Join-Path $installer 'vswhere.exe'
@@ -18,8 +21,8 @@ $hookSources = "`"$here\hook.cpp`" `"$here\hook_dxgi.cpp`" `"$here\hook_d3d12.cp
 $flags += " /I`"$here\third_party\Vulkan-Headers\include`""   # intestazioni ufficiali Khronos (Apache 2.0 / MIT)
 
 foreach ($arch in @(@{ Name = 'x64'; Bits = '64' }, @{ Name = 'x86'; Bits = '32' })) {
-    $out = Join-Path $here "bin\$($arch.Name)"
-    $obj = Join-Path $here "obj\$($arch.Name)"
+    $out = Join-Path $OutRoot "bin\$($arch.Name)"
+    $obj = Join-Path $OutRoot "obj\$($arch.Name)"
     New-Item -ItemType Directory -Force $out, $obj | Out-Null
     $b = $arch.Bits
 
@@ -47,4 +50,4 @@ foreach ($arch in @(@{ Name = 'x64'; Bits = '64' }, @{ Name = 'x86'; Bits = '32'
     if ($LASTEXITCODE -ne 0) { throw "Compilazione nativa $($arch.Name) fallita (codice $LASTEXITCODE)." }
 }
 
-Get-ChildItem (Join-Path $here 'bin') -Include *.dll, *.exe -Recurse | ForEach-Object { '{0,-8} {1}' -f $_.Directory.Name, $_.Name }
+Get-ChildItem (Join-Path $OutRoot 'bin') -Include *.dll, *.exe -Recurse | ForEach-Object { '{0,-8} {1}' -f $_.Directory.Name, $_.Name }

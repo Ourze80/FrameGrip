@@ -40,6 +40,11 @@ public sealed class HardwareService : IDisposable
     public volatile HardwareSnapshot Current = HardwareSnapshot.Empty;
     /// <summary>Se falso, aggiorna solo l'hardware che ha sensori nell'overlay (meno carico in gioco).</summary>
     public volatile bool PollAll = true;
+    /// <summary>
+    /// Con PollAll falso, legge anche processore e scheda video (non solo l'hardware dell'overlay): servono alla
+    /// misura del limite ideale (carico della GPU, VRAM, core più carico).
+    /// </summary>
+    public volatile bool PollCpuGpu;
 
     private readonly AutoResetEvent _wake = new(false);
     private volatile bool _idle;
@@ -64,7 +69,8 @@ public sealed class HardwareService : IDisposable
 
     public HardwareService()
     {
-        _thread = new Thread(Run) { IsBackground = true, Name = "FrameGrip sensors" };
+        // sotto il normale: la lettura dei sensori non deve mai togliere tempo al gioco
+        _thread = new Thread(Run) { IsBackground = true, Name = "FrameGrip sensors", Priority = ThreadPriority.BelowNormal };
         _thread.Start();
     }
 
@@ -79,10 +85,13 @@ public sealed class HardwareService : IDisposable
     /// <summary>Esito dell'avvio del driver dei sensori (vedi SensorDriver.Start); -2 = non ancora provato.</summary>
     public volatile int DriverCode = -2;
 
+    private readonly HashSet<string> _loggedErrors = new();   // solo dal thread dei sensori
+
     private void Run()
     {
         Computer computer;
-        StartSensorDriver();
+        try { StartSensorDriver(); }
+        catch (Exception ex) { AppLog.Write("Sensors: driver start failed: " + ex.Message); }
         try
         {
             computer = new Computer
@@ -110,6 +119,7 @@ public sealed class HardwareService : IDisposable
             try
             {
                 bool all = PollAll || first;
+                bool cpuGpu = PollCpuGpu;
                 var roots = new HashSet<string>();
                 foreach (var id in _selected)
                     if (rootOf.TryGetValue(id, out var r)) roots.Add(r);
@@ -119,7 +129,8 @@ public sealed class HardwareService : IDisposable
                 foreach (var hw in computer.Hardware.ToArray())
                 {
                     string rootId = hw.Identifier.ToString();
-                    bool update = all || roots.Contains(rootId);
+                    bool update = all || roots.Contains(rootId)
+                        || (cpuGpu && hw.HardwareType is HardwareType.Cpu or HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel);
                     // Interrogare i dischi li sveglia e può dare micro-scatti nei giochi: se nessun loro
                     // sensore è nell'overlay, li si legge solo ogni 30 secondi (bastano per l'elenco).
                     if (update && !first && hw.HardwareType == HardwareType.Storage && !roots.Contains(rootId) && cycle % 30 != 0)
@@ -149,7 +160,13 @@ public sealed class HardwareService : IDisposable
                 }
                 first = false;
             }
-            catch { /* hardware collegato/scollegato durante la lettura: si riprova al giro dopo */ }
+            catch (Exception ex)
+            {
+                // hardware collegato/scollegato durante la lettura: si riprova al giro dopo.
+                // Ogni errore diverso si scrive nel diario una volta sola (prima si perdeva in silenzio).
+                string key = ex.GetType().Name + ": " + ex.Message;
+                if (_loggedErrors.Count < 50 && _loggedErrors.Add(key)) AppLog.Write("Sensors: read error: " + ex);
+            }
 
             WaitHandle.WaitAny(waits, _idle ? 5000 : 1000);
         }

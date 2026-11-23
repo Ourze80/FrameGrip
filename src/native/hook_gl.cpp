@@ -24,24 +24,45 @@ namespace
     typedef void(APIENTRY* BindFramebufferFn)(GLenum, GLuint);
     typedef void(APIENTRY* ActiveTextureFn)(GLenum);
 
+    typedef BOOL(WINAPI* DeleteContextFn)(HGLRC);
+
     SwapFn g_origSwap = nullptr;
-    HGLRC g_ctx = nullptr;
+    DeleteContextFn g_origDeleteContext = nullptr;
+    // Contesto per cui valgono texture e funzioni qui sotto. Lo azzera anche wglDeleteContext: un nuovo
+    // contesto con lo stesso handle non deve mai farci scrivere in una texture del gioco con lo stesso numero.
+    HGLRC volatile g_ctx = nullptr;
     GLuint g_tex = 0;
     uint32_t g_texW = 0, g_texH = 0, g_texSerial = 0;
+    bool g_coreProfile = false;
+    // Funzioni chieste a wglGetProcAddress una volta per contesto (valgono solo per quel contesto).
+    UseProgramFn g_useProgram = nullptr;
+    BindBufferFn g_bindBuffer = nullptr;
+    BindFramebufferFn g_bindFramebuffer = nullptr;
+    ActiveTextureFn g_activeTexture = nullptr;
     thread_local int g_depth = 0;
+
+    // Svuota gli errori di OpenGL lasciati da noi, con un tetto: senza contesto valido glGetError può
+    // rispondere sempre con un errore, e un ciclo senza fine bloccherebbe il gioco.
+    void DrainErrors()
+    {
+        for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; i++) {}
+    }
+
+    BOOL WINAPI HookDeleteContext(HGLRC ctx)
+    {
+        // Contesto buttato: la prossima volta si riparte da zero (texture e funzioni).
+        InterlockedCompareExchangePointer((void* volatile*)&g_ctx, nullptr, ctx);
+        return g_origDeleteContext(ctx);
+    }
 
     void Draw(HDC hdc)
     {
+        ff::OverlayTryLock overlayLock;   // un solo thread alla volta; se occupato si salta (mai attese)
+        if (!overlayLock.locked) return;
         ff::Overlay ov;
         if (!ff::GetOverlay(ov)) return;
         HGLRC ctx = wglGetCurrentContext();
         if (!ctx) return;
-
-        // Nei contesti "core" le funzioni classiche non esistono: lì non si disegna.
-        GLint profile = 0;
-        glGetIntegerv(FF_GL_CONTEXT_PROFILE_MASK, &profile);
-        while (glGetError() != GL_NO_ERROR) {}
-        if (profile & 0x1) return;
 
         HWND hwnd = WindowFromDC(hdc);
         RECT rc;
@@ -49,15 +70,25 @@ namespace
 
         if (ctx != g_ctx)
         {
-            g_ctx = ctx;
             g_tex = 0;
             g_texW = g_texH = 0;
+            // Nei contesti "core" le funzioni classiche non esistono: lì non si disegna.
+            GLint profile = 0;
+            glGetIntegerv(FF_GL_CONTEXT_PROFILE_MASK, &profile);
+            DrainErrors();
+            g_coreProfile = (profile & 0x1) != 0;
+            g_useProgram = (UseProgramFn)wglGetProcAddress("glUseProgram");
+            g_bindBuffer = (BindBufferFn)wglGetProcAddress("glBindBuffer");
+            g_bindFramebuffer = (BindFramebufferFn)wglGetProcAddress("glBindFramebuffer");
+            g_activeTexture = (ActiveTextureFn)wglGetProcAddress("glActiveTexture");
+            g_ctx = ctx;
         }
+        if (g_coreProfile) return;
 
-        auto useProgram = (UseProgramFn)wglGetProcAddress("glUseProgram");
-        auto bindBuffer = (BindBufferFn)wglGetProcAddress("glBindBuffer");
-        auto bindFramebuffer = (BindFramebufferFn)wglGetProcAddress("glBindFramebuffer");
-        auto activeTexture = (ActiveTextureFn)wglGetProcAddress("glActiveTexture");
+        auto useProgram = g_useProgram;
+        auto bindBuffer = g_bindBuffer;
+        auto bindFramebuffer = g_bindFramebuffer;
+        auto activeTexture = g_activeTexture;
 
         GLint program = 0, unpackBuffer = 0, framebuffer = 0;
         if (useProgram) glGetIntegerv(FF_GL_CURRENT_PROGRAM, &program);
@@ -139,7 +170,7 @@ namespace
         if (useProgram) useProgram((GLuint)program);
         glPopClientAttrib();
         glPopAttrib();
-        while (glGetError() != GL_NO_ERROR) {}
+        DrainErrors();
         ff::MarkDrawn();
     }
 
@@ -233,5 +264,10 @@ bool ff::HookOpenGL()
     any |= InlineHook("OpenGL gdi32 SwapBuffers", (void*)g_importSwap, (void*)HookGdiSwap, (void**)&g_origGdiSwap);
     any |= InlineHook("OpenGL wglSwapBuffers", gl ? (void*)GetProcAddress(gl, "wglSwapBuffers") : nullptr,
         (void*)HookSwap, (void**)&g_origSwap);
+    // Serve solo a dimenticare texture e funzioni di un contesto buttato. Se non riesce, il disegno
+    // resta possibile (con il rischio, raro, di un handle riusato).
+    if (any && !g_origDeleteContext)
+        InlineHook("OpenGL wglDeleteContext", gl ? (void*)GetProcAddress(gl, "wglDeleteContext") : nullptr,
+            (void*)HookDeleteContext, (void**)&g_origDeleteContext);
     return any;
 }

@@ -9,8 +9,11 @@ namespace FrameGrip.Core;
 public static class AppLog
 {
     private static readonly object Gate = new();
-    private static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameGrip", "app.log");
+    // FRAMEGRIP_LOG sceglie un altro file (solo per le prove: non scrivono nel diario dell'utente)
+    private static readonly string FilePath = Environment.GetEnvironmentVariable("FRAMEGRIP_LOG") is { Length: > 0 } custom
+        ? custom
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameGrip", "app.log");
+    private static readonly string OldPath = Path.ChangeExtension(FilePath, ".old.log");
 
     public static void Write(string message)
     {
@@ -20,7 +23,8 @@ public static class AppLog
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
                 var info = new FileInfo(FilePath);
-                if (info.Exists && info.Length > 512 * 1024) File.Delete(FilePath);   // non cresce all'infinito
+                // non cresce all'infinito, ma la parte vecchia resta in app.old.log (serve a capire un problema appena passato)
+                if (info.Exists && info.Length > 512 * 1024) File.Move(FilePath, OldPath, overwrite: true);
                 File.AppendAllText(FilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}");
             }
         }

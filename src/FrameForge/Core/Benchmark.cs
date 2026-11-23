@@ -114,16 +114,9 @@ public sealed class Benchmark
             CsvPath: "",
             SummaryPath: "");
 
-        var inv = CultureInfo.InvariantCulture;
-        var csv = new StringBuilder("frame,tempo_ms,frametime_ms\n", n * 24);
-        double t = 0;
-        for (int i = 0; i < n; i++)
-        {
-            t += frames[i];
-            csv.Append(i + 1).Append(',').Append(t.ToString("0.###", inv)).Append(',')
-               .Append(frames[i].ToString("0.###", inv)).Append('\n');
-        }
         // Il risultato resta valido anche se il salvataggio fallisce: i percorsi restano vuoti.
+        // Qui (thread dell'interfaccia) si scrive solo il riepilogo, piccolo, che dice anche se la cartella è scrivibile;
+        // il CSV con tutti i frame (milioni di righe in una sessione lunga) lo scrive un altro thread, a flusso.
         string safeName = string.Concat(_game.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
         string summary = Describe(result, true);
         foreach (string folder in Folders)
@@ -132,14 +125,42 @@ public sealed class Benchmark
             {
                 Directory.CreateDirectory(folder);
                 string stem = Path.Combine(folder, $"{safeName}_{_started:yyyy-MM-dd_HH-mm-ss}");
-                File.WriteAllText(stem + ".csv", csv.ToString());
                 File.WriteAllText(stem + "_summary.txt", summary, new UTF8Encoding(true)); // con BOM: accenti corretti ovunque
                 Folder = folder;
-                return result with { CsvPath = stem + ".csv", SummaryPath = stem + "_summary.txt" };
+                string csvPath = stem + ".csv";
+                PendingCsv = Task.Run(() => WriteCsv(csvPath, frames));
+                return result with { CsvPath = csvPath, SummaryPath = stem + "_summary.txt" };
             }
             catch { /* cartella non scrivibile: si prova la successiva */ }
         }
         return result;
+    }
+
+    /// <summary>Il CSV dell'ultimo benchmark mentre viene scritto (completato quando il file è pronto). Serve alle prove.</summary>
+    public Task PendingCsv { get; private set; } = Task.CompletedTask;
+
+    /// <summary>Scrive tutti i frametime riga per riga, senza costruire prima un testo enorme in memoria.</summary>
+    private static void WriteCsv(string path, List<float> frames)
+    {
+        try
+        {
+            var inv = CultureInfo.InvariantCulture;
+            using var w = new StreamWriter(path, false, new UTF8Encoding(false), 1 << 16);
+            w.Write("frame,tempo_ms,frametime_ms\n");
+            Span<char> buf = stackalloc char[32];
+            double t = 0;
+            for (int i = 0; i < frames.Count; i++)
+            {
+                t += frames[i];
+                if ((i + 1).TryFormat(buf, out int len, default, inv)) w.Write(buf[..len]);
+                w.Write(',');
+                if (t.TryFormat(buf, out len, "0.###", inv)) w.Write(buf[..len]); else w.Write(t.ToString("0.###", inv));
+                w.Write(',');
+                if (frames[i].TryFormat(buf, out len, "0.###", inv)) w.Write(buf[..len]); else w.Write(frames[i].ToString("0.###", inv));
+                w.Write('\n');
+            }
+        }
+        catch (Exception ex) { AppLog.Write($"Benchmark: could not write {path}: {ex.Message}"); }
     }
 
     /// <summary>Riepilogo leggibile; con i sensori quando è destinato al file.</summary>

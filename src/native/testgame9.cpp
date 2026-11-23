@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cwchar>
+#include "testdump.h"
 
 static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
@@ -24,7 +25,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
     wc.lpszClassName = L"FrameGripTestGame9";
     RegisterClassExW(&wc);
     // "off": finestra fuori dallo schermo, visibile ma senza fuoco (le prove non disturbano chi usa il PC).
-    bool offscreen = cmd && wcsstr(cmd, L"off");
+    bool offscreen = TestOffscreen(cmd);
     HWND hwnd = CreateWindowExW(offscreen ? WS_EX_TOOLWINDOW : 0, wc.lpszClassName, L"FrameGrip Test Game (D3D9, 32 bit)", WS_OVERLAPPEDWINDOW,
         offscreen ? -3000 : 160, offscreen ? 100 : 160, offscreen ? 700 : 640, offscreen ? 800 : 360, nullptr, nullptr, inst, nullptr);
     bool activate = cmd && wcsstr(cmd, L"activate");

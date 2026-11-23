@@ -45,7 +45,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
     wc.lpszClassName = L"FrameGripTestGameVk";
     RegisterClassExW(&wc);
     // "off": finestra fuori dallo schermo, visibile ma senza fuoco (le prove non disturbano chi usa il PC).
-    bool offscreen = cmd && wcsstr(cmd, L"off");
+    bool offscreen = TestOffscreen(cmd);
     HWND hwnd = CreateWindowExW(offscreen ? WS_EX_TOOLWINDOW : 0, wc.lpszClassName, L"FrameGrip Test Game (Vulkan)", WS_OVERLAPPEDWINDOW,
         offscreen ? -3000 : 280, offscreen ? 100 : 280, offscreen ? 700 : 640, offscreen ? 800 : 360, nullptr, nullptr, inst, nullptr);
     bool activate = cmd && wcsstr(cmd, L"activate");
