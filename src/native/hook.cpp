@@ -270,6 +270,7 @@ namespace ff
         // Per accenderla servono 16 frame di fila con il ritmo giusto; si spegne subito se le coppie L L
         // diventano tante, oppure dopo 32 frame di fila senza il ritmo giusto. Tutto O(1), niente allocazioni.
         static int64_t lastExit = 0;
+        static int g_freeStreak = 1000;   // fotogrammi di fila che il limitatore non ha frenato
         static double longEma = 0;
         static bool ring[64] = {};       // intervallo corto?
         static bool llRing[64] = {};     // intervallo lungo subito dopo un altro lungo?
@@ -291,7 +292,23 @@ namespace ff
         static int outliers = 0, fgLogs = 0;
         static double runMax = 0;
         bool isShort = false;
-        if (lastExit != 0)
+        // Il ritmo si giudica solo sui fotogrammi che il limitatore non ha appena frenato. Quando e' lui a
+        // tenere fermo il gioco, i fotogrammi dopo sono gia' pronti e arrivano tutti "subito": il tempo tra una
+        // consegna e l'altra non dice piu' niente della frame generation, e a giudicarlo lo stesso la modalita'
+        // raffica si accendeva e spegneva ogni secondo (FPS che ballano attorno al limite). Mentre frena, lo
+        // stato resta quello deciso prima; un gioco frenato dall'inizio resta al passo regolare, un
+        // fotogramma ogni intervallo, che e' comunque il limite giusto.
+        bool clean = g_freeStreak >= 8;
+        if (lastExit != 0 && !clean)
+        {
+            double gap = (double)(nowQpc - lastExit);
+            isShort = longEma > 0 && gap < 0.35 * longEma;   // serve solo a chi frena, non alle statistiche
+            prevShort = true;
+            curRun = 0;
+            runMax = 0;
+            enterStreak = 0;
+        }
+        else if (lastExit != 0)
         {
             double gap = (double)(nowQpc - lastExit);
             if (gap < (double)g_freq && longEma > 0 && gap > 4.0 * longEma && outliers < 2)
@@ -425,33 +442,46 @@ namespace ff
             // Con la frame generation si frena la raffica intera, non ogni fotogramma: quelli generati
             // passano subito, altrimenti ci si metterebbe in mezzo al lavoro della scheda video.
             // Il limite resta quello dei fotogrammi che si vedono (100 fps = 50 raffiche da due).
-            if (!(fgMode && isShort))
+            //
+            // Il conto pero' si tiene su OGNI fotogramma (ognuno sposta l'orario di un intervallo), non sulle
+            // raffiche: se il ritmo non e' quello creduto (piu' generati del previsto, per esempio con il menu
+            // di un involucro aperto sopra la frame generation) il limite tiene lo stesso. Prima i "corti"
+            // passavano senza essere contati e bastava un corto in piu' ogni tanto per superare il limite.
+            // Un corto aspetta solo se e' in anticipo di piu' di una raffica intera.
+            double per = (double)g_freq / fps;
+            double interval = per * burst;
+            double now = (double)Qpc();
+            bool passing = fgMode && isShort;
+            // Primo frame, oppure frame in ritardo (oltre il 10% dell'intervallo): si riparte da qui,
+            // senza "recuperare" con frame attaccati uno all'altro.
+            if (g_next == 0 || now > g_next + 0.1 * interval)
             {
-                double interval = (double)g_freq / fps * burst;
-                double now = (double)Qpc();
-                // Primo frame, oppure frame in ritardo (oltre il 10% dell'intervallo): si riparte da qui,
-                // senza "recuperare" con frame attaccati uno all'altro.
-                if (g_next == 0 || now > g_next + 0.1 * interval)
-                {
-                    g_next = now;
-                    dLate++;
-                }
-                else if (now < g_next)
-                {
-                    WaitUntil(g_next);
-                    dWaited++;
-                }
-                g_next += interval;
+                g_next = now;
+                if (passing) dPassed++; else dLate++;
             }
-            else
+            else if (!passing && now < g_next)
+            {
+                WaitUntil(g_next);
+                dWaited++;
+                g_freeStreak = 0;
+            }
+            else if (passing && now < g_next - interval)
+            {
+                WaitUntil(g_next - interval);
+                dWaited++;
+                g_freeStreak = 0;
+            }
+            else if (passing)
             {
                 dPassed++;
             }
+            g_next += per;
         }
         else
         {
             g_next = 0;
         }
+        if (g_freeStreak < 1000) g_freeStreak++;   // dopo un'attesa riparte da 1: servono 8 fotogrammi liberi di fila
 
         // --- misura ---
         uint64_t idx = s->writeIndex;

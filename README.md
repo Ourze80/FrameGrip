@@ -81,7 +81,7 @@
 
 ## Install
 
-1. Download `FrameGrip-Setup-1.0.1.exe` from [Releases](https://github.com/Ourze80/FrameGrip/releases/latest).
+1. Download `FrameGrip-Setup-1.0.2.exe` from [Releases](https://github.com/Ourze80/FrameGrip/releases/latest).
 2. Run it and follow the steps.
 3. Open FrameGrip, choose an overlay style, and start a game: FrameGrip recognises it on its own.
 

@@ -48,6 +48,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
     // scatto (120-300 ms); poi torna veloce. Serve a vedere che dopo il limite tenga ancora.
     bool stutterTest = cmd && wcsstr(cmd, L"stutter");
     unsigned stutterRnd = 12345;
+    // "extra=P": P coppie su 100 hanno un fotogramma generato in piu'.
+    int extraP = 0;
+    if (cmd) { if (const wchar_t* e = wcsstr(cmd, L"extra=")) swscanf_s(e + 6, L"%d", &extraP); }
+    bool extraTest = extraP > 0;
     // "shader=P,A,B": da 8 secondi in poi il gioco "compila gli shader" senza sosta: P fotogrammi su 100
     // costano da A a B ms in piu' (scatti continui e a caso, come nei minuti di compilazione di un gioco vero).
     // "work=N": lavoro di base del gioco per ogni fotogramma, in decimi di millisecondo (attesa precisa).
@@ -234,6 +238,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int)
             // Finta frame generation: un secondo fotogramma consegnato subito dopo il primo,
             // poi il "lavoro" del gioco per la coppia successiva.
             sc->Present(0, 0);
+            // "extra": da 8 secondi in poi quasi una coppia su due ha un fotogramma generato in piu' (ritmo
+            // irregolare, come con il menu di un involucro aperto sopra la frame generation): il limite deve tenere.
+            if (extraTest && t > 8.0)
+            {
+                stutterRnd = stutterRnd * 1664525u + 1013904223u;
+                if (((stutterRnd >> 16) & 0xFF) % 100 < (unsigned)extraP) sc->Present(0, 0);
+            }
             QueryPerformanceCounter(&q1);
             if (t > 6.0 && t < 10.0 && lastPair != 0)   // i primi secondi servono a FrameGrip per agganciarsi e riconoscere il ritmo
             {
